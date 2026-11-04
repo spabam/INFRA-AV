@@ -1,0 +1,5 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.cargo/bin
+
+* * * * * root flock -n /var/lock/infra-av-worker.lock /path/to/backend/target/release/infra-av-backend worker --once >> /var/log/infra-av/worker-cron.log 2>&1
+17 */4 * * * root flock -n /var/lock/infra-av-freshclam.lock /usr/bin/freshclam --stdout >> /var/log/infra-av/freshclam-cron.log 2>&1

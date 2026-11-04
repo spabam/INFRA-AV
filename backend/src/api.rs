@@ -1,0 +1,449 @@
+use actix_cors::Cors;
+use actix_web::{App, HttpRequest, HttpResponse, HttpServer, web};
+use anyhow::{Context, Result, anyhow};
+use serde::Serialize;
+use serde_json::json;
+use std::process::Command;
+use std::thread;
+use std::time::Duration;
+
+use crate::auth;
+use crate::browser;
+use crate::clamav::probe_command;
+use crate::config::AppConfig;
+use crate::models::{
+    ApiEnvelope, ApiResponse, HealthResponse, LoginRequest, LoginResponse, ScanActionRequest,
+    ScanBrowseRequest, ScanControlRequest, ScanControlResponse, ScanListRequest,
+    ScanListResponse, ScanReportResponse, ScanStatusRequest, ScanStatusResponse, SignatureUpdateResponse,
+    JobStatus,
+};
+use crate::{queue, report, worker};
+
+const FRESHCLAM_LOCK_FILE: &str = "/var/lock/infra-av-freshclam.lock";
+
+#[derive(Clone)]
+struct AppState {
+    config: AppConfig,
+}
+
+pub async fn run_server(config: AppConfig) -> Result<()> {
+    let bind_address = format!("{}:{}", config.host, config.port);
+    let state = AppState {
+        config: config.clone(),
+    };
+
+    HttpServer::new(move || {
+        let cors = build_cors(&state.config);
+        App::new()
+            .app_data(web::Data::new(state.clone()))
+            .wrap(cors)
+            .route("/api", web::post().to(api_handler))
+    })
+    .bind(&bind_address)
+    .with_context(|| format!("failed to bind {bind_address}"))?
+    .run()
+    .await
+    .context("actix server failed")
+}
+
+async fn api_handler(
+    request: HttpRequest,
+    body: web::Json<ApiEnvelope>,
+    state: web::Data<AppState>,
+) -> HttpResponse {
+    match dispatch(request, body.into_inner(), state.get_ref()).await {
+        Ok(response) => response,
+        Err(error) => map_error(error),
+    }
+}
+
+async fn dispatch(
+    request: HttpRequest,
+    envelope: ApiEnvelope,
+    state: &AppState,
+) -> Result<HttpResponse> {
+    match envelope.action.as_str() {
+        "auth.login" => {
+            let payload: LoginRequest =
+                serde_json::from_value(envelope.payload).context("invalid login payload")?;
+            let role = auth::authenticate(&state.config, &payload.username, &payload.password)?;
+            let token = auth::issue_token(&state.config, &payload.username, &role)?;
+            Ok(ok(LoginResponse {
+                token,
+                username: payload.username,
+                role,
+            }))
+        }
+        "auth.sso" => {
+            let secret = state
+                .config
+                .broker_secret
+                .as_deref()
+                .ok_or_else(|| anyhow!("sso not configured"))?;
+            #[derive(serde::Deserialize)]
+            struct SsoRequest {
+                token: String,
+            }
+            let payload: SsoRequest =
+                serde_json::from_value(envelope.payload).context("invalid sso payload")?;
+            let (username, roles) = auth::verify_broker_token(secret, &payload.token)?;
+            // UUUUI admins/superadmins map to the AV admin role; everyone else to
+            // the configured default role.
+            let role = if roles.iter().any(|r| r == "admin" || r == "superadmin") {
+                "admin".to_string()
+            } else {
+                state.config.default_role.clone()
+            };
+            let token = auth::issue_token(&state.config, &username, &role)?;
+            Ok(ok(LoginResponse {
+                token,
+                username,
+                role,
+            }))
+        }
+        "health.check" => {
+            let counts = queue::queue_counts(&state.config)?;
+            let (clamscan_ok, clamscan_output) =
+                probe_command(&state.config.clamscan_bin, "--version");
+            let (freshclam_ok, freshclam_output) =
+                probe_command(&state.config.freshclam_bin, "--version");
+            Ok(ok(HealthResponse {
+                backend_version: env!("CARGO_PKG_VERSION").to_string(),
+                clamscan: crate::models::CommandProbe {
+                    ok: clamscan_ok,
+                    output: clamscan_output,
+                },
+                freshclam: crate::models::CommandProbe {
+                    ok: freshclam_ok,
+                    output: freshclam_output,
+                },
+                queue: counts,
+            }))
+        }
+        "scan.submit" => {
+            let claims = claims_from_request(&request, &state.config)?;
+            let payload: ScanActionRequest =
+                serde_json::from_value(envelope.payload).context("invalid scan payload")?;
+            let response = queue::submit_job(&state.config, &claims.sub, payload)?;
+            Ok(ok(response))
+        }
+        "scan.browse" => {
+            let _claims = claims_from_request(&request, &state.config)?;
+            let payload: ScanBrowseRequest =
+                serde_json::from_value(envelope.payload).context("invalid browse payload")?;
+            let response = browser::browse_targets(&state.config, payload)?;
+            Ok(ok(response))
+        }
+        "scan.status" => {
+            let _claims = claims_from_request(&request, &state.config)?;
+            let payload: ScanStatusRequest =
+                serde_json::from_value(envelope.payload).context("invalid status payload")?;
+            let job = queue::load_job(&state.config, &payload.request_id)?
+                .ok_or_else(|| anyhow!("job not found"))?;
+            let result = job.result.clone();
+            let report_available = result.is_some();
+            let report_filename =
+                report_available.then(|| report::report_filename(&job.request_id));
+            Ok(ok(ScanStatusResponse {
+                request_id: job.request_id,
+                status: job.status,
+                target: job.target,
+                submitted_by: job.submitted_by,
+                submitted_at: job.submitted_at,
+                started_at: result
+                    .as_ref()
+                    .and_then(|value| value.started_at)
+                    .or(job.execution.as_ref().map(|value| value.started_at)),
+                finished_at: result.as_ref().and_then(|value| value.finished_at),
+                command_preview: job.command_preview,
+                output: result.clone().map(|value| value.output).unwrap_or_default(),
+                summary: result.clone().and_then(|value| value.summary),
+                error_message: result.and_then(|value| value.error_message),
+                report_available,
+                report_filename,
+            }))
+        }
+        "scan.report" => {
+            let _claims = claims_from_request(&request, &state.config)?;
+            let payload: ScanStatusRequest =
+                serde_json::from_value(envelope.payload).context("invalid report payload")?;
+            let job = queue::load_job(&state.config, &payload.request_id)?
+                .ok_or_else(|| anyhow!("job not found"))?;
+            let (filename, html) = report::read_or_render_report(&state.config, &job)?;
+            Ok(ok(ScanReportResponse {
+                request_id: job.request_id,
+                filename,
+                html,
+            }))
+        }
+        "scan.list" => {
+            let _claims = claims_from_request(&request, &state.config)?;
+            let payload: ScanListRequest =
+                serde_json::from_value(envelope.payload).unwrap_or(ScanListRequest { limit: 20 });
+            let items = queue::list_jobs(&state.config, payload.limit)?;
+            Ok(ok(ScanListResponse { items }))
+        }
+        "scan.pause" => {
+            let claims = claims_from_request(&request, &state.config)?;
+            let payload: ScanControlRequest =
+                serde_json::from_value(envelope.payload).context("invalid pause payload")?;
+            let response =
+                update_running_job(&state.config, &claims, &payload.request_id, |job, _path| {
+                    ensure_manageable_job(&claims, job)?;
+                    if job.status == JobStatus::Paused {
+                        return Ok(job.status);
+                    }
+                    if job.status != JobStatus::Processing {
+                        return Err(anyhow!("scan is not currently running"));
+                    }
+                    let pid = running_child_pid(job)?;
+                    send_signal(pid, libc::SIGSTOP)?;
+                    job.status = JobStatus::Paused;
+                    job.status_updated_at = chrono::Utc::now();
+                    if let Some(execution) = job.execution.as_mut() {
+                        execution.paused = true;
+                    }
+                    Ok(job.status)
+                })?;
+            Ok(ok(response))
+        }
+        "scan.resume" => {
+            let claims = claims_from_request(&request, &state.config)?;
+            let payload: ScanControlRequest =
+                serde_json::from_value(envelope.payload).context("invalid resume payload")?;
+            let response =
+                update_running_job(&state.config, &claims, &payload.request_id, |job, _path| {
+                    ensure_manageable_job(&claims, job)?;
+                    if job.status == JobStatus::Processing {
+                        return Ok(job.status);
+                    }
+                    if job.status != JobStatus::Paused {
+                        return Err(anyhow!("scan is not paused"));
+                    }
+                    let pid = running_child_pid(job)?;
+                    send_signal(pid, libc::SIGCONT)?;
+                    job.status = JobStatus::Processing;
+                    job.status_updated_at = chrono::Utc::now();
+                    if let Some(execution) = job.execution.as_mut() {
+                        execution.paused = false;
+                    }
+                    Ok(job.status)
+                })?;
+            Ok(ok(response))
+        }
+        "scan.stop" => {
+            let claims = claims_from_request(&request, &state.config)?;
+            let payload: ScanControlRequest =
+                serde_json::from_value(envelope.payload).context("invalid stop payload")?;
+            let Some((job, path)) = queue::load_job_with_path(&state.config, &payload.request_id)?
+            else {
+                return Err(anyhow!("job not found"));
+            };
+
+            ensure_manageable_job(&claims, &job)?;
+            let response = if path.starts_with(&state.config.pending_dir) {
+                let cancelled = queue::cancel_pending_job(&state.config, &payload.request_id)?
+                    .ok_or_else(|| anyhow!("job not found"))?;
+                ScanControlResponse {
+                    request_id: cancelled.request_id,
+                    status: cancelled.status,
+                }
+            } else if path.starts_with(&state.config.processing_dir) {
+                let mut job = job;
+                let pid = running_child_pid(&job)?;
+                if job.status == JobStatus::Paused {
+                    send_signal(pid, libc::SIGCONT).ok();
+                }
+                if let Some(execution) = job.execution.as_mut() {
+                    execution.paused = false;
+                    execution.cancel_requested = true;
+                }
+                job.status = JobStatus::Cancelled;
+                job.status_updated_at = chrono::Utc::now();
+                queue::write_job(&path, &job)?;
+                stop_process(pid);
+                ScanControlResponse {
+                    request_id: job.request_id,
+                    status: job.status,
+                }
+            } else {
+                ScanControlResponse {
+                    request_id: job.request_id,
+                    status: job.status,
+                }
+            };
+            Ok(ok(response))
+        }
+        "scan.runWorkerOnce" => {
+            let claims = claims_from_request(&request, &state.config)?;
+            if claims.role != "admin" {
+                return Ok(forbidden("admin role required"));
+            }
+            let processed = worker::run(state.config.clone(), true, std::time::Duration::ZERO);
+            match processed {
+                Ok(()) => Ok(ok(json!({ "processed": true }))),
+                Err(error) => Ok(server_error(error.to_string())),
+            }
+        }
+        "signatures.update" => {
+            let claims = claims_from_request(&request, &state.config)?;
+            if claims.role != "admin" {
+                return Ok(forbidden("admin role required"));
+            }
+            let (exit_code, lines) = run_signature_update(&state.config)?;
+
+            Ok(ok(SignatureUpdateResponse {
+                exit_code,
+                output: lines,
+            }))
+        }
+        other => Ok(bad_request(format!("unsupported action {}", other))),
+    }
+}
+
+fn claims_from_request(request: &HttpRequest, config: &AppConfig) -> Result<auth::Claims> {
+    let auth_header = request
+        .headers()
+        .get("Authorization")
+        .ok_or_else(|| anyhow!("missing authorization header"))?
+        .to_str()
+        .context("invalid authorization header")?;
+    let token = auth_header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| anyhow!("authorization header must use Bearer"))?;
+    auth::decode_token(config, token)
+}
+
+fn build_cors(config: &AppConfig) -> Cors {
+    let mut cors = Cors::default()
+        .allow_any_header()
+        .allowed_methods(vec!["POST"])
+        .supports_credentials();
+    for origin in &config.cors_origins {
+        cors = cors.allowed_origin(origin);
+    }
+    cors
+}
+
+fn update_running_job<F>(
+    config: &AppConfig,
+    claims: &auth::Claims,
+    request_id: &str,
+    mut updater: F,
+) -> Result<ScanControlResponse>
+where
+    F: FnMut(&mut crate::models::QueuedJob, &std::path::Path) -> Result<JobStatus>,
+{
+    let Some((mut job, path)) = queue::load_job_with_path(config, request_id)? else {
+        return Err(anyhow!("job not found"));
+    };
+    ensure_manageable_job(claims, &job)?;
+    if !path.starts_with(&config.processing_dir) {
+        return Err(anyhow!("scan is not active"));
+    }
+    let status = updater(&mut job, &path)?;
+    queue::write_job(&path, &job)?;
+    Ok(ScanControlResponse {
+        request_id: job.request_id,
+        status,
+    })
+}
+
+fn ensure_manageable_job(claims: &auth::Claims, job: &crate::models::QueuedJob) -> Result<()> {
+    if claims.role == "admin" || claims.sub == job.submitted_by {
+        return Ok(());
+    }
+
+    Err(anyhow!("you do not have permission to manage this scan"))
+}
+
+fn running_child_pid(job: &crate::models::QueuedJob) -> Result<i32> {
+    job.execution
+        .as_ref()
+        .and_then(|value| value.child_pid)
+        .map(|value| value as i32)
+        .ok_or_else(|| anyhow!("scan process is not available"))
+}
+
+fn send_signal(pid: i32, signal: i32) -> Result<()> {
+    let rc = unsafe { libc::kill(pid, signal) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "failed to signal process {pid}: {}",
+            std::io::Error::last_os_error()
+        ))
+    }
+}
+
+fn process_exists(pid: i32) -> bool {
+    let rc = unsafe { libc::kill(pid, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+fn stop_process(pid: i32) {
+    let _ = send_signal(pid, libc::SIGTERM);
+    for _ in 0..20 {
+        if !process_exists(pid) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let _ = send_signal(pid, libc::SIGKILL);
+}
+
+fn run_signature_update(config: &AppConfig) -> Result<(i32, Vec<String>)> {
+    let output = Command::new("flock")
+        .args(["-n", FRESHCLAM_LOCK_FILE, &config.freshclam_bin, "--stdout"])
+        .output()
+        .with_context(|| format!("failed to execute {}", config.freshclam_bin))?;
+
+    let mut lines = Vec::new();
+    lines.extend(
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_string),
+    );
+    lines.extend(
+        String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .map(str::to_string),
+    );
+
+    Ok((output.status.code().unwrap_or(56), lines))
+}
+
+fn ok<T: Serialize>(data: T) -> HttpResponse {
+    HttpResponse::Ok().json(ApiResponse::success(data))
+}
+
+fn bad_request(message: impl Into<String>) -> HttpResponse {
+    HttpResponse::BadRequest().json(ApiResponse::<serde_json::Value>::failure(message))
+}
+
+fn unauthorized(message: impl Into<String>) -> HttpResponse {
+    HttpResponse::Unauthorized().json(ApiResponse::<serde_json::Value>::failure(message))
+}
+
+fn forbidden(message: impl Into<String>) -> HttpResponse {
+    HttpResponse::Forbidden().json(ApiResponse::<serde_json::Value>::failure(message))
+}
+
+fn server_error(message: impl Into<String>) -> HttpResponse {
+    HttpResponse::InternalServerError().json(ApiResponse::<serde_json::Value>::failure(message))
+}
+
+fn map_error(error: anyhow::Error) -> HttpResponse {
+    let message = error.to_string();
+    let normalized = message.to_ascii_lowercase();
+
+    if normalized.contains("invalid token")
+        || normalized.contains("missing authorization header")
+        || normalized.contains("authorization header must use bearer")
+    {
+        return unauthorized(message);
+    }
+
+    bad_request(message)
+}
