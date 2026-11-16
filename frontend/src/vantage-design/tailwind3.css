@@ -1,0 +1,43 @@
+/* VANTAGE adapter for Tailwind 3 / shadcn controls. No independent palette. */
+:root { --radius: var(--u-radius-lg); }
+body { font-family: var(--u-font); font-size: var(--u-text-sm); line-height: 1.5; }
+.font-sans { font-family: var(--u-font); }
+.font-mono, code, pre, kbd, samp { font-family: var(--u-mono); font-variant-ligatures: none; }
+.vantage-shadcn-button {
+  min-height: var(--u-control-h); height: auto; border-radius: var(--u-radius);
+  font-family: var(--u-font); font-size: var(--u-text-sm); font-weight: 500;
+  line-height: 1.25rem; padding: calc((var(--u-control-h) - 1.25rem - 2px) / 2) 1rem; white-space: normal;
+}
+.vantage-shadcn-button[data-vantage-size="sm"] { min-height: var(--u-control-h-sm); padding: calc((var(--u-control-h-sm) - 1.25rem - 2px) / 2) .75rem; }
+.vantage-shadcn-button[data-vantage-size="icon"] { width: var(--u-control-h); padding: calc((var(--u-control-h) - 1.25rem - 2px) / 2); flex-shrink: 0; }
+.vantage-shadcn-button[data-vantage-size="lg"] { min-height: 2.75rem; }
+.vantage-shadcn-button:disabled, .vantage-shadcn-button[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
+.vantage-shadcn-button:focus-visible, .vantage-shadcn-input:focus-visible, .vantage-shadcn-textarea:focus-visible {
+  outline: 2px solid var(--u-ring); outline-offset: 2px;
+}
+.vantage-shadcn-input {
+  min-height: var(--u-control-h); height: auto; padding: calc((var(--u-control-h) - 1.25rem - 2px) / 2) .75rem;
+  font-family: var(--u-font); font-size: var(--u-text-sm); line-height: 1.25rem;
+  color: var(--u-text); background: var(--u-surface); border: 1px solid var(--u-input); border-radius: var(--u-radius);
+}
+.vantage-shadcn-textarea {
+  min-height: 6rem; padding: .5rem .75rem; font-family: var(--u-font); font-size: var(--u-text-sm); line-height: 1.5;
+  color: var(--u-text); background: var(--u-surface); border: 1px solid var(--u-input); border-radius: var(--u-radius);
+}
+.vantage-shadcn-input[aria-invalid="true"], .vantage-shadcn-textarea[aria-invalid="true"] { border-color: var(--u-danger); }
+.vantage-shadcn-card { border-radius: var(--u-radius-lg); background: var(--u-surface); color: var(--u-text); border-color: var(--u-border); box-shadow: var(--u-shadow); }
+.vantage-card-title { font-size: var(--u-text-base); line-height: 1.5; font-weight: 600; letter-spacing: normal; }
+.vantage-shadcn-table { font-size: var(--u-text-sm); font-variant-numeric: tabular-nums; }
+.vantage-shadcn-table :is(th,td) { height: var(--v-row-h, 2.75rem); padding: .5rem .75rem; line-height: 1.25rem; }
+.vantage-shadcn-table th { color: var(--u-muted); background: var(--u-surface-2); font-weight: 500; }
+.vantage-shadcn-table tbody tr:hover { background: var(--u-surface-2); }
+.vantage-shadcn-table tr[data-state="selected"] { background: var(--u-accent-soft); box-shadow: inset 3px 0 var(--u-accent); }
+.vantage-appearance { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.vantage-appearance button { min-height: var(--u-control-h-sm); padding: calc((var(--u-control-h-sm) - 1.25rem - 2px) / 2) .75rem; border: 1px solid var(--u-input); border-radius: var(--u-radius); background: var(--u-surface); color: var(--u-text); font: 500 var(--u-text-sm)/1.25rem var(--u-font); }
+.vantage-appearance button:hover { background: var(--u-surface-2); }
+.vantage-appearance button:focus-visible { outline: 2px solid var(--u-ring); outline-offset: 2px; }
+.vantage-appearance button[aria-pressed="true"] { background: var(--u-accent-soft); border-color: var(--u-accent); }
+@media (pointer: coarse) { .vantage-shadcn-button, .vantage-shadcn-input, .vantage-appearance button { min-height: 2.75rem; } }
+
+/* Explicit technical fields keep the monospace role after control styling. */
+.vantage-shadcn-input.font-mono, .vantage-shadcn-textarea.font-mono { font-family: var(--u-mono); font-variant-ligatures: none; }

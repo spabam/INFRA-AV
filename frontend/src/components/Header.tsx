@@ -1,3 +1,4 @@
+import { AppearanceControls } from "@/components/AppearanceControls";
 import { useEffect, useState } from "react";
 import { RefreshCw, LogOut, User } from "lucide-react";
 import { toast } from "sonner";
@@ -8,6 +9,7 @@ import {
   updateSignatures,
 } from "@/lib/api";
 import logo from "../../logo.png";
+import release from "@/version.json";
 
 const Header = () => {
   const { auth, logout } = useAuth();
@@ -62,14 +64,14 @@ const Header = () => {
 
   const engineReady = Boolean(health?.clamscan.ok && health?.freshclam.ok);
   const engineLabel = loadingHealth
-    ? "Checking Engine"
+    ? "Checking engine"
     : engineReady
-    ? "Engine Ready"
-    : "Engine Error";
+    ? "Engine ready"
+    : "Engine error";
 
   return (
-    <header className="border-b bg-card px-6 py-4">
-      <div className="mx-auto flex max-w-7xl items-center justify-between">
+    <header className="av-page-header border-b bg-card">
+      <div className="av-header-content flex items-center justify-between">
         <div className="flex items-center gap-3">
           <img
             src={logo}
@@ -77,10 +79,12 @@ const Header = () => {
             className="h-10 w-10 rounded-lg object-contain"
           />
           <div>
-            <h1 className="text-lg font-semibold tracking-tight">INFRA-AV Web Interface</h1>
+            <h1 className="av-page-title">Antivirus</h1>
+            <p className="text-xs text-muted-foreground" title={`Backend ${health?.backendVersion ?? "connecting"}`}>{release.version}</p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="av-header-actions flex items-center gap-3">
+          <AppearanceControls />
           <div className="flex items-center gap-2 rounded-md bg-secondary px-3 py-1.5">
             <span
               className={`h-2 w-2 rounded-full ${
@@ -91,7 +95,7 @@ const Header = () => {
               {engineLabel}
             </span>
             {health && (
-              <span className="text-[10px] text-muted-foreground">
+              <span className="text-xs text-muted-foreground">
                 Q:{health.queue.pending}
               </span>
             )}
@@ -104,7 +108,7 @@ const Header = () => {
             <RefreshCw
               className={`h-3.5 w-3.5 ${updatingSignatures ? "animate-spin" : ""}`}
             />
-            {updatingSignatures ? "Updating..." : "Update Signatures"}
+            {updatingSignatures ? "Updating..." : "Update signatures"}
           </button>
           <div className="h-5 w-px bg-border" />
           <div className="flex items-center gap-2 rounded-md bg-secondary px-3 py-1.5">

@@ -7,6 +7,9 @@ mod models;
 mod queue;
 mod report;
 mod worker;
+mod version {
+    include!(concat!(env!("OUT_DIR"), "/product-version.rs"));
+}
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -16,7 +19,7 @@ use clap::{Parser, Subcommand};
 use config::AppConfig;
 
 #[derive(Debug, Parser)]
-#[command(author, version, about = "INFRA-AV Rust backend")]
+#[command(author, version = version::VERSION, about = "INFRA-AV Rust backend")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

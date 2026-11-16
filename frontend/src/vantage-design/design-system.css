@@ -1,0 +1,20 @@
+@import "./tokens.css";
+@import "./components.css";
+/* Low-specificity defaults let module adapters preserve specialized canvases. */
+*, *::before, *::after { box-sizing: border-box; }
+body { font-family: var(--v-font-sans); font-size: var(--v-text-ui); line-height: 1.5; color: var(--v-text); background: var(--v-canvas); -webkit-font-smoothing: antialiased; }
+:where(button, input, select, textarea) { font: inherit; color: inherit; }
+:where(h1, h2, h3, h4, h5, h6) { font-family: var(--v-font-sans); font-weight: 600; letter-spacing: normal; text-transform: none; }
+:where(h1) { font-size: var(--v-text-title); line-height: var(--v-line-title); }
+:where(h2) { font-size: var(--v-text-section); line-height: 1.625rem; }
+:where(h3) { font-size: var(--v-text-card); line-height: var(--v-line-body); }
+:where(code, pre, kbd, samp, .v-code) { font-family: var(--v-font-mono); font-size: var(--v-text-code); font-variant-ligatures: none; line-height: var(--v-line-ui); }
+:where(td, th, .v-metric) { font-variant-numeric: tabular-nums; }
+:where(a) { color: var(--v-primary); }
+:where(button, input, select, textarea, a, summary, [tabindex]):focus-visible { outline: 2px solid var(--v-focus); outline-offset: 2px; }
+:where(button, input, select, textarea):disabled { opacity: .55; cursor: not-allowed; }
+:where(input, textarea)::placeholder { color: var(--v-text-muted); opacity: 1; }
+:where(input[type="checkbox"], input[type="radio"]) { accent-color: var(--v-primary); }
+::selection { background: var(--v-selection); color: var(--v-selection-text); }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+@media (forced-colors: active) { :where(button, input, select, textarea, [role="tab"]) { border: 1px solid ButtonText; } :where([aria-current="page"], [aria-selected="true"]) { outline: 2px solid Highlight; } }

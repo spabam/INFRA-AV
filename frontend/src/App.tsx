@@ -14,14 +14,14 @@ const AuthGate = () => {
   const { auth, bootstrapping } = useAuth();
   if (bootstrapping && !auth.authenticated) {
     return (
-      <div style={{ display: "flex", height: "100vh", alignItems: "center", justifyContent: "center", color: "#888" }}>
+      <div style={{ display: "flex", height: "100vh", alignItems: "center", justifyContent: "center", color: "var(--u-muted)" }}>
         Signing in…
       </div>
     );
   }
   if (!auth.authenticated) return <Login />;
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, "") || "/"}>
       <Routes>
         <Route path="/" element={<Index />} />
         <Route path="*" element={<NotFound />} />

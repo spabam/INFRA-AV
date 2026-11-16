@@ -39,9 +39,11 @@ const Index = () => {
   const [activeTab, setActiveTab] = useState<"options" | "command">("options");
   const [currentRequestId, setCurrentRequestId] = useState("");
   const [scanStatus, setScanStatus] = useState<ScanStatusResponse | null>(null);
-  const [reportHtml, setReportHtml] = useState("");
-  const [reportFilename, setReportFilename] = useState("");
+  const [storedReportHtml, setReportHtml] = useState("");
+  const [storedReportFilename, setReportFilename] = useState("");
   const [isLoadingReport, setIsLoadingReport] = useState(false);
+  const reportHtml = scanStatus?.reportAvailable ? storedReportHtml : "";
+  const reportFilename = scanStatus?.reportAvailable ? storedReportFilename : "";
 
   useEffect(() => {
     if (!currentRequestId) return;
@@ -88,8 +90,6 @@ const Index = () => {
     }
 
     if (!scanStatus.reportAvailable) {
-      setReportHtml("");
-      setReportFilename(scanStatus.reportFilename || "");
       return;
     }
 
@@ -243,20 +243,22 @@ const Index = () => {
   const statCards = scanStatus?.summary
     ? [
         {
-          label: "Files Scanned",
+          label: "Files scanned",
           value: scanStatus.summary.filesScanned?.toString() || "-",
           color: "text-foreground",
         },
         {
-          label: "Threats Found",
-          value: scanStatus.summary.infectedFiles?.toString() || "0",
+          label: "Threats found",
+          value: scanStatus.summary.infectedFiles?.toString() ?? "Unknown",
           color:
             (scanStatus.summary.infectedFiles || 0) > 0
               ? "text-destructive"
-              : "text-success",
+              : scanStatus.status === "done" && scanStatus.summary.clean && scanStatus.summary.infectedFiles === 0
+                ? "text-success"
+                : "text-muted-foreground",
         },
         {
-          label: "Scan Time",
+          label: "Scan time",
           value: scanStatus.summary.duration || "-",
           color: "text-foreground",
         },
@@ -264,14 +266,14 @@ const Index = () => {
     : [];
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="av-workspace min-h-screen bg-background">
       <Header />
 
-      <main className="mx-auto max-w-7xl p-6">
-        <div className="grid gap-6 lg:grid-cols-[400px_1fr]">
+      <main className="av-page-content">
+        <div className="av-workspace-grid grid gap-6">
           {/* Left Panel: Config */}
           <div className="animate-fade-up space-y-4">
-            <div className="rounded-xl border bg-card p-5 shadow-sm">
+            <div className="rounded-lg border bg-card p-5 shadow-sm">
               <ScanTarget
                 token={auth.token}
                 target={target}
@@ -281,7 +283,7 @@ const Index = () => {
               />
             </div>
 
-            <div className="rounded-xl border bg-card shadow-sm">
+            <div className="rounded-lg border bg-card shadow-sm">
               <div className="flex items-center border-b">
                 <button
                   onClick={() => setActiveTab("options")}
@@ -321,7 +323,7 @@ const Index = () => {
               <button
                 onClick={handleStartScan}
                 disabled={!target || isSubmitting || isScanRunning}
-                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground shadow-sm transition-all hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98]"
+                className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground shadow-sm transition-all hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98]"
               >
                 {isSubmitting || isScanRunning ? (
                   <>
@@ -331,14 +333,14 @@ const Index = () => {
                 ) : (
                   <>
                     <Play className="h-4 w-4" />
-                    Start Scan
+                    Start scan
                   </>
                 )}
               </button>
               <button
                 onClick={handlePauseScan}
                 disabled={!canPause}
-                className="flex items-center gap-2 rounded-xl border bg-card px-4 py-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.97]"
+                className="flex items-center gap-2 rounded-lg border bg-card px-4 py-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.97]"
               >
                 <Pause className="h-4 w-4" />
                 Pause
@@ -346,7 +348,7 @@ const Index = () => {
               <button
                 onClick={handleResumeScan}
                 disabled={!canResume}
-                className="flex items-center gap-2 rounded-xl border bg-card px-4 py-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.97]"
+                className="flex items-center gap-2 rounded-lg border bg-card px-4 py-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.97]"
               >
                 <Play className="h-4 w-4" />
                 Resume
@@ -354,21 +356,21 @@ const Index = () => {
               <button
                 onClick={handleStopScan}
                 disabled={!canStop}
-                className="flex items-center gap-2 rounded-xl border bg-card px-4 py-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.97]"
+                className="flex items-center gap-2 rounded-lg border bg-card px-4 py-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40 active:scale-[0.97]"
               >
                 <Square className="h-4 w-4" />
                 Stop
               </button>
               <button
                 onClick={resetAll}
-                className="flex items-center gap-2 rounded-xl border bg-card px-4 py-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground active:scale-[0.97]"
+                className="flex items-center gap-2 rounded-lg border bg-card px-4 py-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground active:scale-[0.97]"
               >
                 <RotateCcw className="h-4 w-4" />
                 Reset
               </button>
             </div>
 
-            <div className="rounded-xl border bg-card p-5 shadow-sm">
+            <div className="rounded-lg border bg-card p-5 shadow-sm">
               <ScanOutput
                 scanStatus={scanStatus}
                 reportHtml={reportHtml}
@@ -382,7 +384,7 @@ const Index = () => {
             {statCards.length > 0 && !isSubmitting && (
               <div className="animate-fade-up grid grid-cols-3 gap-3">
                 {statCards.map((stat) => (
-                  <div key={stat.label} className="rounded-xl border bg-card p-4 text-center shadow-sm">
+                  <div key={stat.label} className="rounded-lg border bg-card p-4 text-center shadow-sm">
                     <div className={`text-2xl font-bold tabular-nums ${stat.color}`}>{stat.value}</div>
                     <div className="mt-1 text-xs text-muted-foreground">{stat.label}</div>
                   </div>

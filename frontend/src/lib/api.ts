@@ -42,6 +42,7 @@ export interface CommandProbe {
 }
 
 export interface HealthResponse {
+  productVersion?: string;
   backendVersion: string;
   clamscan: CommandProbe;
   freshclam: CommandProbe;

@@ -12,6 +12,9 @@ pub struct AppConfig {
     /// Shared secret with the UUUUI broker, used to verify the SSO handoff token
     /// (broker GET /session/token). When unset, auth.sso is disabled.
     pub broker_secret: Option<String>,
+    /// Previous broker secret, accepted during a key-rotation overlap window
+    /// (see UUUUI/shared/uuuui-identity/CONTRACT.md). Unset outside a rotation.
+    pub broker_secret_previous: Option<String>,
     pub data_dir: PathBuf,
     pub pending_dir: PathBuf,
     pub processing_dir: PathBuf,
@@ -99,6 +102,9 @@ impl AppConfig {
             broker_secret: env::var("INFRA_AV_BROKER_SECRET")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
+            broker_secret_previous: env::var("INFRA_AV_BROKER_SECRET_PREVIOUS")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
             data_dir,
             pending_dir: action_dir.join("pending"),
             processing_dir: action_dir.join("processing"),
@@ -110,8 +116,12 @@ impl AppConfig {
             temp_dir,
             pam_service: env::var("INFRA_AV_PAM_SERVICE")
                 .unwrap_or_else(|_| "infra-av".to_string()),
+            // Least-privilege fallback: an account that authenticates but has no
+            // explicit role (a PAM user absent from users.json, or a non-admin
+            // UUUUI SSO user) gets "member", not "admin". Administrators are
+            // granted explicitly (users.json, or UUUUI admin/superadmin roles).
             default_role: env::var("INFRA_AV_DEFAULT_ROLE")
-                .unwrap_or_else(|_| "admin".to_string()),
+                .unwrap_or_else(|_| "member".to_string()),
             users_file,
             clamscan_bin: env::var("INFRA_AV_CLAMSCAN_BIN")
                 .unwrap_or_else(|_| "/usr/bin/clamscan".to_string()),

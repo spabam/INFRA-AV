@@ -269,7 +269,7 @@ const ScanTarget = ({
 
     return (
       <>
-        <div className="rounded-xl border bg-card p-4">
+        <div className="rounded-lg border bg-card p-4">
           <div className="space-y-3">
             <label className="text-sm font-medium">Scan Target</label>
             <div className="flex flex-col gap-3 md:flex-row">
@@ -379,7 +379,7 @@ const ScanTarget = ({
                 </div>
               </div>
 
-              <div className="overflow-hidden rounded-xl border bg-card">
+              <div className="overflow-hidden rounded-lg border bg-card">
                 <div className="grid grid-cols-[minmax(0,1fr)_220px] border-b bg-secondary/20 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                   <div>Name</div>
                   <div>Details</div>
@@ -480,7 +480,7 @@ const ScanTarget = ({
   };
 
   const renderDeviceChooser = () => (
-    <div className="overflow-hidden rounded-xl border bg-card">
+    <div className="overflow-hidden rounded-lg border bg-card">
       <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
         <div>
           <label className="text-sm font-medium">Scan Target</label>

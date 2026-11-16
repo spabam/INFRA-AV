@@ -1,0 +1,57 @@
+/* VANTAGE Design System. Edit this source, then scripts/design-system.py sync.
+   Geometry uses rem so browser text resizing also enlarges controls. */
+@font-face { font-family: "Inter"; src: url("./fonts/InterVariable.woff2") format("woff2"); font-style: normal; font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Inter"; src: url("./fonts/InterVariable-Italic.woff2") format("woff2"); font-style: italic; font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; src: url("./fonts/JetBrainsMono-Regular.woff2") format("woff2"); font-style: normal; font-weight: 100 599; font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; src: url("./fonts/JetBrainsMono-Bold.woff2") format("woff2"); font-style: normal; font-weight: 600 900; font-display: swap; }
+:root {
+  --v-font-sans: "Inter", system-ui, -apple-system, "Segoe UI", "Noto Sans", sans-serif;
+  --v-font-mono: "JetBrains Mono", ui-monospace, "Noto Sans Mono", monospace;
+  --v-canvas: #f8fafc; --v-surface: #ffffff; --v-surface-hover: #f1f5f9;
+  --v-text: #0f172a; --v-text-muted: #475569; --v-border: #e2e8f0;
+  --v-input-border: #64748b; --v-primary: #0369a1; --v-primary-hover: #075985;
+  --v-on-primary: #ffffff; --v-selection: #e0f2fe; --v-selection-text: #075985;
+  --v-danger: #b91c1c; --v-success: #15803d; --v-warning: #92400e; --v-info: #0369a1;
+  --v-danger-soft: #fef2f2; --v-success-soft: #f0fdf4; --v-warning-soft: #fffbeb;
+  --v-focus: #0369a1; --v-overlay: rgb(15 23 42 / .6);
+  --v-phase-plan: #1d4ed8; --v-phase-execute: #15803d; --v-phase-validate: #a21caf;
+  --v-chart-1: #0369a1; --v-chart-2: #7e22ce; --v-chart-3: #047857; --v-chart-4: #b45309; --v-chart-5: #be185d;
+  --v-shadow: 0 1px 3px rgb(15 23 42 / .08);
+  --v-radius: .375rem; --v-radius-card: .5rem; --v-radius-pill: 9999px;
+  --v-text-caption: .75rem; --v-text-code: .8125rem; --v-text-ui: .875rem;
+  --v-text-body: 1rem; --v-text-card: 1rem; --v-text-section: 1.125rem; --v-text-title: 1.5rem;
+  --v-line-caption: 1.125rem; --v-line-ui: 1.25rem; --v-line-body: 1.5rem; --v-line-title: 2rem;
+  --v-space-1: .25rem; --v-space-2: .5rem; --v-space-3: .75rem; --v-space-4: 1rem;
+  --v-space-5: 1.25rem; --v-space-6: 1.5rem; --v-space-7: 1.75rem; --v-space-8: 2rem;
+  --v-global-header-height: 3.5rem; --v-page-header-height: 4rem; --v-sidebar-width: 16rem;
+  --v-control-height: 2.5rem; --v-control-small: 2.25rem; --v-row-height: 2.75rem;
+  --v-table-row-height: var(--v-row-height); --v-row-h: var(--v-row-height); --u-row-h: var(--v-row-height); --v-card-padding: 1.5rem; --v-gap: 1rem; --v-gutter: 1.5rem;
+  --v-motion: 120ms;
+  /* Stable compatibility contract for native modules and old extensions. */
+  --u-font: var(--v-font-sans); --u-mono: var(--v-font-mono);
+  --u-canvas: var(--v-canvas); --u-surface: var(--v-surface); --u-surface-2: var(--v-surface-hover);
+  --u-text: var(--v-text); --u-muted: var(--v-text-muted); --u-border: var(--v-border); --u-input: var(--v-input-border);
+  --u-accent: var(--v-primary); --u-accent-hover: var(--v-primary-hover); --u-accent-fg: var(--v-on-primary);
+  --u-accent-soft: var(--v-selection); --u-primary: var(--v-primary); --u-primary-hover: var(--v-primary-hover); --u-primary-fg: var(--v-on-primary);
+  --u-danger-fg: var(--v-surface); --u-ok-fg: var(--v-surface); --u-warn-fg: var(--v-surface); --u-danger: var(--v-danger); --u-ok: var(--v-success); --u-warn: var(--v-warning); --u-ring: var(--v-focus); --u-shadow: var(--v-shadow);
+  --u-radius: var(--v-radius); --u-radius-lg: var(--v-radius-card); --u-radius-pill: var(--v-radius-pill);
+  --u-text-xs: var(--v-text-caption); --u-text-sm: var(--v-text-ui); --u-text-base: var(--v-text-body); --u-text-lg: var(--v-text-section); --u-text-xl: var(--v-text-title); --u-tracking: normal;
+  --u-header-h: var(--v-page-header-height); --u-control-h: var(--v-control-height); --u-control-h-sm: var(--v-control-small);
+  --u-nav-h: var(--v-control-height); --u-sidebar-w: var(--v-sidebar-width); --u-pad: var(--v-gutter);
+  color-scheme: light;
+}
+:root.dark, :root[data-theme="dark"], :root[data-uuuui-theme="dark"] {
+  --v-canvas: #0b1220; --v-surface: #111827; --v-surface-hover: #1e293b;
+  --v-text: #e5e7eb; --v-text-muted: #94a3b8; --v-border: #334155;
+  --v-input-border: #64748b; --v-primary: #38bdf8; --v-primary-hover: #7dd3fc;
+  --v-on-primary: #082f49; --v-selection: #0c334b; --v-selection-text: #7dd3fc;
+  --v-danger: #fca5a5; --v-success: #86efac; --v-warning: #fcd34d; --v-info: #7dd3fc;
+  --v-danger-soft: #3b1823; --v-success-soft: #123029; --v-warning-soft: #352b14;
+  --v-focus: #38bdf8; --v-phase-plan: #93c5fd; --v-phase-execute: #86efac; --v-phase-validate: #f0abfc;
+  --v-chart-1: #38bdf8; --v-chart-2: #c084fc; --v-chart-3: #34d399; --v-chart-4: #fbbf24; --v-chart-5: #f472b6;
+  --v-shadow: 0 1px 3px rgb(0 0 0 / .24); color-scheme: dark;
+}
+:root[data-vantage-density="compact"] { --v-control-height: 2.25rem; --v-row-height: 2.25rem; --v-card-padding: 1rem; --v-gap: .75rem; }
+@media (max-width: 640px) { :root { --v-gutter: 1rem; } }
+@media (pointer: coarse) { :root, :root[data-vantage-density] { --v-control-height: 2.75rem; --v-control-small: 2.75rem; --v-row-height: 2.75rem; } }
+@media (prefers-reduced-motion: reduce) { :root { --v-motion: 0ms; } }

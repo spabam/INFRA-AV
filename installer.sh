@@ -63,6 +63,12 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FRONTEND_DIR="$PROJECT_ROOT/frontend"
 BACKEND_DIR="$PROJECT_ROOT/backend"
 BACKEND_BINARY="$BACKEND_DIR/target/release/infra-av-backend"
+# The freshly built binary lives under the source tree's target/ dir, which the
+# shared post-install cleanup (.installer_cleanup.sh EXIT trap) removes. Deploy a
+# stable copy OUTSIDE the source tree and run the service + cron from that copy,
+# so the cleanup can never delete the binary out from under the running services.
+INSTALL_BIN_DIR="${INFRA_AV_INSTALL_BIN_DIR:-/usr/local/lib/infra-av}"
+INSTALLED_BINARY="$INSTALL_BIN_DIR/infra-av-backend"
 INSTALL_MODE="${1:-install}"
 
 ENV_DIR="/etc/infra-av"
@@ -268,6 +274,7 @@ Removed:
   $DATA_DIR
   $LOG_DIR
   $DEPLOY_FRONTEND_DIR
+  $INSTALL_BIN_DIR
 
 Restored:
   $FRESHCLAM_CONFIG_FILE
@@ -275,7 +282,11 @@ Restored:
 EOF
 }
 
-uninstall_existing_install() {
+# Remove only the regenerable service artifacts (systemd unit, cron, nginx site,
+# PAM policy, deployed frontend + binary). Deliberately PRESERVES $ENV_DIR (JWT
+# secret + users.json), $DATA_DIR (scan history, quarantine) and $LOG_DIR, so an
+# install-over-existing (reinstall/upgrade) is non-destructive.
+remove_service_artifacts() {
   systemctl disable --now infra-av-backend.service >/dev/null 2>&1 || true
   rm -f "$SERVICE_FILE"
   systemctl daemon-reload >/dev/null 2>&1 || true
@@ -283,7 +294,15 @@ uninstall_existing_install() {
   rm -f "$CRON_FILE"
   rm -f "$NGINX_LINK" "$NGINX_SITE"
   rm -f "$PAM_SERVICE_FILE"
-  rm -rf "$DEPLOY_FRONTEND_DIR" "$ENV_DIR" "$DATA_DIR" "$LOG_DIR"
+  rm -rf "$DEPLOY_FRONTEND_DIR"
+  rm -rf "$INSTALL_BIN_DIR"
+}
+
+# Full teardown, INCLUDING all persistent state. Only invoked for an explicit
+# `uninstall`, never for a reinstall.
+uninstall_existing_install() {
+  remove_service_artifacts
+  rm -rf "$ENV_DIR" "$DATA_DIR" "$LOG_DIR"
 
   restore_freshclam_config
   reload_nginx_if_present
@@ -313,6 +332,12 @@ check_frontend_tree() {
 }
 
 ensure_generated_values() {
+  # Preserve the existing JWT secret across reinstalls so already-issued tokens
+  # and live sessions survive an upgrade. Only mint a new one on a first install
+  # or when the operator explicitly overrides it via INFRA_AV_JWT_SECRET.
+  if [[ -z "$JWT_SECRET" && -f "$ENV_FILE" ]]; then
+    JWT_SECRET="$(sed -n 's/^INFRA_AV_JWT_SECRET=//p' "$ENV_FILE" | head -n 1)"
+  fi
   if [[ -z "$JWT_SECRET" ]]; then
     JWT_SECRET="$(openssl rand -hex 32)"
   fi
@@ -335,6 +360,7 @@ generate_admin_password() {
 }
 
 build_backend() {
+  bash "$PROJECT_ROOT/scripts/version.sh" check
   # shellcheck disable=SC1090
   source "$RUST_ENV_FILE"
   pushd "$BACKEND_DIR" >/dev/null
@@ -343,10 +369,19 @@ build_backend() {
 }
 
 build_frontend() {
+  python3 "$FRONTEND_DIR/src/vantage-design/verify.py" --check
   pushd "$FRONTEND_DIR" >/dev/null
-  npm ci --no-audit --no-fund --loglevel=error
+  npm ci --include=dev --no-audit --no-fund --loglevel=error
   BROWSERSLIST_IGNORE_OLD_DATA=1 VITE_API_BASE="" npm run build
   popd >/dev/null
+}
+
+deploy_backend() {
+  # Copy the built binary to a stable path outside the source tree so the shared
+  # installer cleanup (which deletes backend/target/ on exit) cannot remove the
+  # binary that the systemd service and the every-minute cron worker execute.
+  install -d -m 755 "$INSTALL_BIN_DIR"
+  install -m 755 "$BACKEND_BINARY" "$INSTALLED_BINARY"
 }
 
 deploy_frontend() {
@@ -418,7 +453,7 @@ bootstrap_admin_user() {
     ADMIN_PASSWORD="$(generate_admin_password)"
   fi
 
-  "$BACKEND_BINARY" bootstrap-user \
+  "$INSTALLED_BINARY" bootstrap-user \
     --username "$ADMIN_USER" \
     --password "$ADMIN_PASSWORD" \
     --role admin \
@@ -472,9 +507,9 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=$BACKEND_DIR
+WorkingDirectory=$DATA_DIR
 EnvironmentFile=$ENV_FILE
-ExecStart=$BACKEND_BINARY server
+ExecStart=$INSTALLED_BINARY server
 Restart=on-failure
 RestartSec=3
 
@@ -488,7 +523,7 @@ write_cron_file() {
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.cargo/bin
 
-* * * * * root flock -n /var/lock/infra-av-worker.lock $BACKEND_BINARY worker --once >> $LOG_DIR/worker-cron.log 2>&1
+* * * * * root flock -n /var/lock/infra-av-worker.lock $INSTALLED_BINARY worker --once >> $LOG_DIR/worker-cron.log 2>&1
 EOF
 
   if [[ "$ENABLE_FRESHCLAM_CRON" == "1" ]]; then
@@ -691,7 +726,7 @@ verify_installation() {
   done
 
   local required_files=(
-    "$BACKEND_BINARY"
+    "$INSTALLED_BINARY"
     "$ENV_FILE"
     "$USERS_FILE"
     "$SERVICE_FILE"
@@ -845,9 +880,12 @@ Service files:
   $PAM_SERVICE_FILE
   $ENV_FILE
 
+Installed binary:
+  $INSTALLED_BINARY
+
 Maintenance:
-  Reinstall:           ./installer.sh
-  Uninstall only:      ./installer.sh uninstall
+  Reinstall (keeps data):  ./installer.sh
+  Uninstall + purge data:  ./installer.sh uninstall
 
 EOF
 }
@@ -865,7 +903,7 @@ main() {
     echo "Unsupported installer mode: $INSTALL_MODE" >&2
     exit 1
   fi
-  uninstall_existing_install
+  remove_service_artifacts
   check_frontend_tree
   validate_pam_service_name
   ensure_generated_values
@@ -874,6 +912,7 @@ main() {
   write_freshclam_config
   install_rust
   build_backend
+  deploy_backend
   build_frontend
   deploy_frontend
   write_env_file

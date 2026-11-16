@@ -117,9 +117,21 @@ The frontend still submits the raw scan request shape, but the backend stores an
 - Device scans follow `INFRA_AV_ALLOW_DEVICE_SCANS`; the installer enables them by default
 - `remove`, `move`, and `copy` are mutually exclusive
 - `log` from the browser is ignored; the backend writes its own log path
-- `database`, `move`, `copy`, and `tempdir` are restricted to safe server roots
+- `database`, `move`, `copy`, and `tempdir` are restricted to safe server roots —
+  the check rejects any `..` component and resolves symlinks before comparing, so
+  a path cannot climb out of (or be redirected out of) an allowed root
 - The original frontend bug `--alert-broken-executables` was fixed to `--alert-broken=yes`
 - Symlink behavior now explicitly uses `--follow-dir-symlinks=0|1` and `--follow-file-symlinks=0|1`
+
+Access rules for the scan API:
+
+- `scan.status`, `scan.report` and `scan.list` are scoped to the caller: a
+  non-admin sees only scans they submitted; admins see every scan
+- The client-supplied `request_id` is validated as a single safe path segment
+  (no `/` or `..`), so it cannot traverse out of the queue directory
+- An authenticated account with no explicit role defaults to `member`
+  (least privilege); administrators are granted explicitly via `users.json` or a
+  UUUUI admin/superadmin role, never implicitly
 
 ## Frontend Notes
 
@@ -147,10 +159,10 @@ sudo ./installer.sh
 
 The installer will:
 
-1. Uninstall the previous INFRA-AV deployment first.
+1. Stop and remove the previous deployment's regenerable service artifacts (systemd unit, cron, nginx site, PAM policy, deployed frontend and binary). A reinstall is **non-destructive**: `/etc/infra-av` (JWT secret and `users.json`) and `/var/lib/infra-av` (scan history and quarantine) are preserved, and the existing JWT secret is reused so live sessions survive the upgrade.
 2. Install ClamAV, nginx, cron, Node.js, npm, and Rust if missing.
 3. Write an INFRA-AV-managed `/etc/clamav/freshclam.conf`, disable the conflicting `clamav-freshclam` daemon, and switch updates to one-shot `freshclam --stdout`.
-4. Build the Rust backend in `backend/target/release/`.
+4. Build the Rust backend in `backend/target/release/`, then deploy the binary to `/usr/local/lib/infra-av/infra-av-backend` — a stable path outside the source tree, so the post-install workspace cleanup (which removes build artifacts such as `target/`) cannot delete the binary the systemd service and cron worker execute.
 5. Build the frontend into `frontend/dist/`.
 6. Generate `/etc/infra-av/backend.env`.
 7. Generate `/etc/infra-av/users.json` with a bcrypt-hashed local fallback admin user.
@@ -160,7 +172,7 @@ The installer will:
 11. Generate or reuse a TLS certificate and install an HTTPS-only nginx site on a configurable port.
 12. Warm the ClamAV signature database and verify `auth.login`, `scan.browse`, and `signatures.update`.
 
-To remove the deployment without reinstalling:
+To remove the deployment **and purge all its data** (service artifacts plus `/etc/infra-av`, `/var/lib/infra-av`, `/var/log/infra-av` and `/usr/local/lib/infra-av`):
 
 ```bash
 sudo ./installer.sh uninstall
@@ -188,7 +200,7 @@ sudo ./installer.sh uninstall
 The installer writes this worker cron entry:
 
 ```cron
-* * * * * root flock -n /var/lock/infra-av-worker.lock /path/to/backend/target/release/infra-av-backend worker --once >> /var/log/infra-av/worker-cron.log 2>&1
+* * * * * root flock -n /var/lock/infra-av-worker.lock /usr/local/lib/infra-av/infra-av-backend worker --once >> /var/log/infra-av/worker-cron.log 2>&1
 ```
 
 The installer writes this freshclam cron entry by default:
@@ -247,13 +259,30 @@ The installer intentionally uses a dedicated HTTPS port by default to avoid conf
 
 ## Verification
 
-At the time of implementation:
+Run these checks from a source checkout before publishing an update:
 
-- Rust backend: `cargo check` passes
-- Frontend: `npm run build` passes
-- Frontend tests: `npm test` passes
-- `clamscan --version`: `1.4.3`
-- `freshclam --version`: `1.4.3`
+```sh
+(cd backend && cargo test && cargo build && python3 tests/test_api_lifecycle.py)
+(cd frontend && npm test && npx tsc -p tsconfig.app.json --noEmit && npm run build)
+bash -n installer.sh
+bash scripts/version.sh check
+```
+
+Backend regressions cover failed startup, vanished targets, competing pending
+cancellation and worker claims, and real ClamAV clean/detection/quarantine/removal
+using harmless text and a private signature database. The Python API suite starts
+an isolated loopback server and worker with temporary credentials and a local
+scanner fixture to exercise owner access, pause/resume/stop, pending cancellation,
+and reports. It requires the compiled debug backend, or `INFRA_AV_TEST_BINARY`;
+it does not use installed services, production credentials or existing scans.
+
+Rejected targets and missing executables finish as failed jobs with an error
+report, without automatic retries. Cancellation claims the pending request before
+publishing a stopped result, so a competing worker cannot execute it after a
+successful pending cancellation. Reports and the interface show missing summaries
+as unknown; only a completed scan with an explicit clean summary and zero detected
+files is labelled clean. Changes ship in the backend/frontend source and are
+rebuilt by both the standalone installer and UUUUI's normal installer.
 
 If you want the frontend linter to run cleanly, run it without parallel build jobs. ESLint 9 and the Vite config loader can race on a transient generated timestamp module when build and lint are started at the same time.
 
@@ -298,7 +327,55 @@ value as the UUUUI broker's `UUUUI_BACKEND_SECRET`, HS256) and issues its own
 token — no second login. Unset `INFRA_AV_BROKER_SECRET` ⇒ `auth.sso` disabled and
 standalone behaviour is unchanged (`backend/src/auth.rs::verify_broker_token`).
 
+**Directory identity.** Under the gateway the backend also receives a per-request
+`X-UUUUI-Identity` assertion (the broker's signed directory token, `aud: av`) and
+verifies it locally per the shared **UUUUI identity-assertion contract**
+(`UUUUI/shared/uuuui-identity/CONTRACT.md`): HS256 only, `aud=av`, not expired,
+lifetime ≤ 120 s and `iat` not in the future
+(`backend/src/auth.rs::verify_directory_identity`). It accepts a rotation key set
+— `INFRA_AV_BROKER_SECRET` plus, during a rotation overlap window,
+`INFRA_AV_BROKER_SECRET_PREVIOUS`. A conformance test
+(`auth::directory_tests::directory_assertion_conformance`) pins it to the same
+case battery the Node, Go and Python verifiers use, so all four stay in lock-step.
+
 Allowed scan roots default to `/home`, `/srv`, `/tmp`
 (`INFRA_AV_ALLOWED_SCAN_ROOTS`); targets outside them are rejected with a clear
 error. Verified end-to-end through the UUUUI tab: a scan of an EICAR test file
 reports `Eicar-Test-Signature FOUND` with a full ClamAV summary and report.
+
+## Product versions
+
+This product now uses VAPT's `10.<release>.<YYYYMMDDHHMM>` scheme. The headline and component versions are recorded in `VERSION`; new registries start at release 1. Run `bash scripts/version.sh show` to inspect them and `bash scripts/version.sh bump [COMPONENT...]` after every source or documentation change. Builds and reinstallations reuse the recorded release. See [VERSIONING.md](VERSIONING.md) for the daily counter rule, component names and standalone commands.
+
+## VANTAGE design system
+
+The standalone AV frontend and its UUUUI deployment use the same local VANTAGE
+release: Inter for interface/prose, JetBrains Mono for commands, semantic light
+and dark colors, and comfortable/compact density. The standalone header exposes
+appearance controls; UUUUI owns these preferences when the module is embedded.
+A synchronous external appearance script runs before styles and the React bundle,
+so a saved dark theme/compact density also applies during a slow or failed app
+load. Vite serves that local runtime in development and publishes it with the
+verified design snapshot; its URL follows `VITE_BASE`. The existing scan lifecycle,
+controls and report HTML are preserved.
+
+The complete snapshot is in `frontend/src/vantage-design`. Do not edit generated
+snapshot files: update `UUUUI/design-system`, run its `scripts/design-system.py sync`,
+and bump the affected products with their version scripts. A standalone checkout
+needs no UUUUI sibling to build. `npm run build`, `npm run build:dev`, direct Vite
+production builds and `installer.sh` verify the manifest and font licenses before
+publishing. The build copies the full release to `dist/vantage-design`; deploy it
+with the app assets. A rollback restores matching app and design assets together.
+
+Migration checklist:
+
+- [x] Local fonts, shared semantic colors and accessible focus/disabled states.
+- [x] Native shadcn button/input/select/card/table adapters; complete dark palette.
+- [x] Responsive page header, target/options/output layout and density sizing.
+- [x] Standalone theme/density controls and gateway prefix support.
+- [x] Build/installer validation and bundled font licenses; no font CDN required.
+- [x] Production build and TypeScript check.
+- [x] Standalone read-only browser fixtures: both themes/densities at
+      320/768/1440 widths, local font load, no page overflow and persisted settings.
+- [ ] Deployment acceptance: report preview and full scan controls on an authorized
+      target. Visual tests do not start real scans.

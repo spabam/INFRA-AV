@@ -66,6 +66,7 @@ pub struct LoginResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthResponse {
+    pub product_version: String,
     pub backend_version: String,
     pub clamscan: CommandProbe,
     pub freshclam: CommandProbe,

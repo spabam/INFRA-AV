@@ -53,38 +53,38 @@ fn render_report(job: &QueuedJob) -> String {
     let infected_files = result
         .summary
         .as_ref()
-        .and_then(|summary| summary.infected_files)
-        .unwrap_or(0);
+        .and_then(|summary| summary.infected_files);
+    let has_detections = infected_files.is_some_and(|count| count > 0);
     let clean = result
         .summary
         .as_ref()
         .map(|summary| summary.clean)
         .unwrap_or(false)
-        && infected_files == 0
+        && infected_files == Some(0)
         && job.status == JobStatus::Done;
 
-    let status_class = if clean {
-        "status-clean"
-    } else if infected_files > 0 {
-        "status-infected"
-    } else if job.status == JobStatus::Cancelled {
+    let status_class = if job.status == JobStatus::Cancelled {
         "status-warning"
     } else if job.status == JobStatus::Failed {
         "status-failed"
+    } else if clean {
+        "status-clean"
+    } else if has_detections {
+        "status-infected"
     } else {
         "status-warning"
     };
 
-    let status_label = if clean {
-        "No Threats Detected"
-    } else if infected_files > 0 {
-        "Threats Detected"
-    } else if job.status == JobStatus::Cancelled {
+    let status_label = if job.status == JobStatus::Cancelled {
         "Scan Stopped"
     } else if job.status == JobStatus::Failed {
         "Scan Failed"
+    } else if clean {
+        "No Threats Detected"
+    } else if has_detections {
+        "Threats Detected"
     } else {
-        "Scan Completed"
+        "Scan Completed — Summary Unavailable"
     };
 
     let threat_items = result
@@ -95,7 +95,14 @@ fn render_report(job: &QueuedJob) -> String {
         .collect::<Vec<_>>();
 
     let threat_section = if threat_items.is_empty() {
-        "<div class=\"panel\"><h3>Detections</h3><p class=\"muted\">No infected files were reported by INFRA-AV for this scan.</p></div>".to_string()
+        let message = if clean {
+            "No infected files were reported by INFRA-AV for this scan."
+        } else if has_detections {
+            "Infected files were reported, but individual detection details are unavailable. Review the raw output."
+        } else {
+            "No complete clean-scan result is available. An incomplete or failed scan must not be interpreted as clean."
+        };
+        format!("<div class=\"panel\"><h3>Detections</h3><p class=\"muted\">{message}</p></div>")
     } else {
         format!(
             "<div class=\"panel\"><h3>Detections</h3><ul class=\"threat-list\">{}</ul></div>",
@@ -110,7 +117,7 @@ fn render_report(job: &QueuedJob) -> String {
             status_label.to_string(),
             if clean {
                 "value-good"
-            } else if infected_files > 0 || job.status == JobStatus::Failed {
+            } else if has_detections || job.status == JobStatus::Failed {
                 "value-bad"
             } else {
                 "value-neutral"
@@ -129,8 +136,8 @@ fn render_report(job: &QueuedJob) -> String {
             summary
                 .and_then(|value| value.infected_files)
                 .map(|value| value.to_string())
-                .unwrap_or_else(|| "0".to_string()),
-            if infected_files > 0 { "value-bad" } else { "value-good" },
+                .unwrap_or_else(|| "Unknown".to_string()),
+            if has_detections { "value-bad" } else if clean { "value-good" } else { "value-neutral" },
         ),
         (
             "Duration",
@@ -556,5 +563,15 @@ mod tests {
         assert!(report.contains("<title>INFRA-AV Scan Report</title>"));
         assert!(report.contains("&lt;file&gt;"));
         assert!(report.contains("No Threats Detected"));
+        for status in [JobStatus::Done, JobStatus::Failed, JobStatus::Cancelled] {
+            let mut incomplete = job.clone();
+            incomplete.status = status;
+            incomplete.result.as_mut().unwrap().summary = None;
+            let report = render_report(&incomplete);
+            assert!(!report.contains("No Threats Detected"));
+            assert!(!report.contains("No infected files were reported"));
+            assert!(report.contains("value-neutral\">Unknown</span>"));
+            assert!(report.contains("must not be interpreted as clean"));
+        }
     }
 }

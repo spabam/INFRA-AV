@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { ChevronDown } from "lucide-react";
 
 export interface ClamAVOptions {
@@ -136,6 +136,7 @@ const Toggle = ({
   <label className="flex cursor-pointer items-start gap-3 rounded-md p-2 transition-colors hover:bg-secondary/60">
     <button
       role="switch"
+      aria-label={label}
       aria-checked={checked}
       onClick={() => onChange(!checked)}
       className={`mt-0.5 h-5 w-9 flex-shrink-0 rounded-full transition-colors active:scale-[0.95] ${
@@ -169,20 +170,24 @@ const TextInput = ({
   onChange: (v: string) => void;
   placeholder?: string;
   mono?: boolean;
-}) => (
+}) => {
+  const id = useId();
+  return (
   <div className="space-y-1 p-2">
-    <label className="text-sm font-medium">{label}</label>
+    <label htmlFor={id} className="text-sm font-medium">{label}</label>
     <input
+      id={id}
       type="text"
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className={`w-full rounded-md border bg-card px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-ring ${
+      className={`vantage-shadcn-input w-full rounded-md border bg-card px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-ring ${
         mono ? "font-mono" : ""
       }`}
     />
   </div>
-);
+  );
+};
 
 const Section = ({
   title,

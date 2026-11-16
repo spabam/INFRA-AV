@@ -1,0 +1,7 @@
+# VANTAGE product/component versions: 10.RELEASE.YYYYMMDDHHMM
+# Every source change bumps its component and the product headline.
+# Use scripts/version.sh bump [COMPONENT...]; see VERSIONING.md.
+infra-av 10.2.202611160910
+backend 10.2.202611160910
+web 10.2.202611160624
+installer 10.2.202611160910

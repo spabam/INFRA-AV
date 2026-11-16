@@ -39,7 +39,7 @@ const ScanOutput = ({
           <FileText className="h-4 w-4 text-muted-foreground" />
           <label className="text-sm font-medium">HTML Scan Report</label>
         </div>
-        <div className="rounded-xl border border-dashed bg-foreground/[0.03] p-8 text-center">
+        <div className="rounded-lg border border-dashed bg-foreground/[0.03] p-8 text-center">
           <p className="text-sm text-muted-foreground">
             Submit a scan to generate the INFRA-AV HTML report.
           </p>
@@ -48,8 +48,8 @@ const ScanOutput = ({
     );
   }
 
-  const infectedFiles = scanStatus.summary?.infectedFiles || 0;
-  const clean = scanStatus.status === "done" && infectedFiles === 0;
+  const infectedFiles = scanStatus.summary?.infectedFiles;
+  const clean = scanStatus.status === "done" && scanStatus.summary?.clean === true && infectedFiles === 0;
   const statusLabel =
     scanStatus.status === "pending"
       ? "Queued"
@@ -59,11 +59,13 @@ const ScanOutput = ({
       ? "Paused"
       : scanStatus.status === "cancelled"
       ? "Stopped"
+      : scanStatus.status === "failed"
+      ? "Failed"
       : clean
       ? "Clean"
-      : infectedFiles > 0
+      : (infectedFiles ?? 0) > 0
       ? "Threats Found"
-      : "Completed With Errors";
+      : "Summary unavailable";
   const statusTone =
     scanStatus.status === "pending" || scanStatus.status === "processing"
       ? "text-primary bg-primary/10"
@@ -111,10 +113,10 @@ const ScanOutput = ({
         </div>
       </div>
 
-      <div className="grid gap-3 rounded-xl border bg-foreground/[0.02] p-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-3 rounded-lg border bg-foreground/[0.02] p-4 md:grid-cols-2 xl:grid-cols-4">
         {timeline.map(([label, value]) => (
           <div key={label} className="rounded-lg border bg-background px-3 py-2">
-            <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+            <div className="text-xs text-muted-foreground">
               {label}
             </div>
             <div className="mt-1 break-all font-mono text-xs text-foreground/80">
@@ -127,7 +129,7 @@ const ScanOutput = ({
       {(scanStatus.status === "pending" ||
         scanStatus.status === "processing" ||
         scanStatus.status === "paused") && (
-        <div className="flex items-start gap-3 rounded-xl border bg-primary/5 p-5">
+        <div className="flex items-start gap-3 rounded-lg border bg-primary/5 p-5">
           <LoaderCircle className="mt-0.5 h-5 w-5 animate-spin text-primary" />
           <div className="space-y-1">
             <p className="text-sm font-semibold text-foreground">
@@ -151,7 +153,7 @@ const ScanOutput = ({
         scanStatus.status !== "paused" && (
         <>
           {isLoadingReport && (
-            <div className="flex items-center gap-3 rounded-xl border bg-secondary/40 p-4 text-sm text-muted-foreground">
+            <div className="flex items-center gap-3 rounded-lg border bg-secondary/40 p-4 text-sm text-muted-foreground">
               <LoaderCircle className="h-4 w-4 animate-spin" />
               Preparing the HTML report...
             </div>
@@ -173,13 +175,13 @@ const ScanOutput = ({
                 title="INFRA-AV Scan Report"
                 sandbox=""
                 srcDoc={reportHtml}
-                className="h-[720px] w-full rounded-xl border bg-white"
+                className="h-[720px] w-full rounded-lg border bg-white"
               />
             </div>
           )}
 
           {!isLoadingReport && !reportHtml && (
-            <div className="rounded-xl border border-dashed bg-secondary/20 p-6 text-sm text-muted-foreground">
+            <div className="rounded-lg border border-dashed bg-secondary/20 p-6 text-sm text-muted-foreground">
               The scan completed, but the HTML report is not available yet.
             </div>
           )}

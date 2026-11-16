@@ -1,7 +1,7 @@
 use std::fs;
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::os::unix::process::ExitStatusExt;
 use std::thread;
 use std::time::Duration;
 
@@ -10,7 +10,7 @@ use chrono::Utc;
 
 use crate::clamav::parse_summary;
 use crate::config::AppConfig;
-use crate::models::{JobExecution, JobResult, JobStatus};
+use crate::models::{JobExecution, JobResult, JobStatus, QueuedJob};
 use crate::{queue, report};
 
 pub fn run(config: AppConfig, once: bool, interval: Duration) -> Result<()> {
@@ -30,7 +30,18 @@ fn process_next(config: &AppConfig) -> Result<bool> {
         return Ok(false);
     };
 
-    let command = queue::rebuild_command(config, &job)?;
+    let command = match queue::rebuild_command(config, &job) {
+        Ok(command) => command,
+        Err(error) => {
+            finish_start_failure(
+                config,
+                &processing_path,
+                job,
+                format!("scan validation failed before execution: {error:#}"),
+            )?;
+            return Ok(true);
+        }
+    };
     job.status = JobStatus::Processing;
     job.status_updated_at = Utc::now();
     job.execution = Some(JobExecution {
@@ -47,12 +58,23 @@ fn process_next(config: &AppConfig) -> Result<bool> {
         .as_ref()
         .map(|value| value.started_at)
         .unwrap_or_else(Utc::now);
-    let child = Command::new(&command.program)
+    let child = match Command::new(&command.program)
         .args(&command.args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("failed to execute {}", command.program))?;
+    {
+        Ok(child) => child,
+        Err(error) => {
+            finish_start_failure(
+                config,
+                &processing_path,
+                job,
+                format!("failed to execute {}: {error}", command.program),
+            )?;
+            return Ok(true);
+        }
+    };
     if let Some(execution) = job.execution.as_mut() {
         execution.child_pid = Some(child.id());
     }
@@ -129,6 +151,37 @@ fn process_next(config: &AppConfig) -> Result<bool> {
     Ok(true)
 }
 
+/// A rejected target or unavailable executable is terminal, not a running scan.
+/// Persist it before moving on so the queue worker does not silently strand jobs
+/// or replay an operation after a service restart.
+fn finish_start_failure(
+    config: &AppConfig,
+    path: &Path,
+    mut job: QueuedJob,
+    message: String,
+) -> Result<()> {
+    let finished_at = Utc::now();
+    job.status = JobStatus::Failed;
+    job.status_updated_at = finished_at;
+    job.execution = None;
+    job.result = Some(JobResult {
+        started_at: None,
+        finished_at: Some(finished_at),
+        exit_code: 2,
+        output: vec![message.clone()],
+        summary: None,
+        error_message: Some(message),
+    });
+    queue::finalize_job(config, path, &job)?;
+    if let Err(error) = report::persist_report(config, &job) {
+        eprintln!(
+            "failed to persist HTML report for {}: {error:#}",
+            job.request_id
+        );
+    }
+    Ok(())
+}
+
 fn write_lines(path: &Path, lines: &[String]) -> Result<()> {
     fs::write(path, lines.join("\n")).with_context(|| format!("failed to write {}", path.display()))
 }
@@ -151,6 +204,8 @@ mod tests {
             host: "127.0.0.1".to_string(),
             port: 5000,
             jwt_secret: "test-secret".to_string(),
+            broker_secret: None,
+            broker_secret_previous: None,
             data_dir: root.join("data"),
             pending_dir: root.join("data/action/pending"),
             processing_dir: root.join("data/action/processing"),
@@ -223,5 +278,185 @@ mod tests {
         assert!(log_path.exists(), "clamscan log file should be written");
 
         fs::remove_dir_all(root).ok();
+    }
+
+    fn fixture(name: &str) -> (PathBuf, AppConfig, PathBuf) {
+        let root = std::env::temp_dir().join(format!("infra-av-{name}-{}", Uuid::new_v4()));
+        let config = test_config(&root);
+        config.ensure_directories().unwrap();
+        fs::create_dir_all(root.join("targets")).unwrap();
+        let target = root.join("targets/fixture.txt");
+        fs::write(&target, "harmless fixture\n").unwrap();
+        (root, config, target)
+    }
+
+    fn submit_fixture(
+        config: &AppConfig,
+        target: &std::path::Path,
+        options: ClamAvOptions,
+    ) -> String {
+        crate::queue::submit_job(
+            config,
+            "tester",
+            ScanActionRequest {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                user: "tester".into(),
+                action_type: "av".into(),
+                target: target.display().to_string(),
+                scan_type: ScanType::File,
+                options,
+            },
+        )
+        .unwrap()
+        .request_id
+    }
+
+    #[test]
+    fn unavailable_executable_is_a_terminal_failure_with_a_report() {
+        let (root, mut config, target) = fixture("missing-executable");
+        config.clamscan_bin = root.join("missing-clamscan").display().to_string();
+        let id = submit_fixture(&config, &target, ClamAvOptions::default());
+        run(config.clone(), true, Duration::ZERO).unwrap();
+        let job = crate::queue::load_job(&config, &id).unwrap().unwrap();
+        assert_eq!(job.status, JobStatus::Failed);
+        assert!(job.execution.is_none());
+        let result = job.result.unwrap();
+        assert!(result.error_message.unwrap().contains("failed to execute"));
+        assert!(
+            result.summary.is_none(),
+            "execution failure must not claim a clean scan"
+        );
+        assert!(crate::report::report_path(&config, &id).is_file());
+        let counts = crate::queue::queue_counts(&config).unwrap();
+        assert_eq!(counts.processing, 0);
+        assert_eq!(counts.failed, 1);
+        run(config.clone(), true, Duration::ZERO).unwrap();
+        assert_eq!(
+            crate::queue::queue_counts(&config).unwrap().failed,
+            1,
+            "failed commands are never retried automatically"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn target_removed_after_submission_does_not_strand_the_queue() {
+        let (root, config, target) = fixture("missing-target");
+        let id = submit_fixture(&config, &target, ClamAvOptions::default());
+        fs::remove_file(target).unwrap();
+        run(config.clone(), true, Duration::ZERO).unwrap();
+        let job = crate::queue::load_job(&config, &id).unwrap().unwrap();
+        assert_eq!(job.status, JobStatus::Failed);
+        assert!(
+            job.result
+                .unwrap()
+                .error_message
+                .unwrap()
+                .contains("validation failed before execution")
+        );
+        assert_eq!(crate::queue::queue_counts(&config).unwrap().processing, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn real_clamav_fixture_database_covers_clean_detection_quarantine_and_removal() {
+        let (root, mut config, target) = fixture("safe-signature");
+        let database = root.join("fixture-database");
+        fs::create_dir_all(&database).unwrap();
+        let fixture_text = "VANTAGE harmless AV regression fixture";
+        let signature = fixture_text
+            .bytes()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        fs::write(
+            database.join("fixture.ndb"),
+            format!("VantageRegressionFixture:0:*:{signature}\n"),
+        )
+        .unwrap();
+        config.allowed_database_roots = vec![database.clone()];
+        for action in ["clean", "detect", "quarantine", "remove"] {
+            let infected = action != "clean";
+            fs::write(
+                &target,
+                if infected {
+                    fixture_text
+                } else {
+                    "ordinary clean fixture"
+                },
+            )
+            .unwrap();
+            let mut options = ClamAvOptions::default();
+            options.database = database.display().to_string();
+            if action == "quarantine" {
+                options.move_path = config.quarantine_dir.display().to_string();
+            }
+            if action == "remove" {
+                options.remove = true;
+            }
+            let id = submit_fixture(&config, &target, options);
+            run(config.clone(), true, Duration::ZERO).unwrap();
+            let job = crate::queue::load_job(&config, &id).unwrap().unwrap();
+            assert_eq!(job.status, JobStatus::Done, "{action}: {:?}", job.result);
+            let result = job.result.unwrap();
+            assert_eq!(
+                result.exit_code,
+                if infected { 1 } else { 0 },
+                "{action}: {:?}",
+                result.output
+            );
+            let summary = result.summary.unwrap();
+            assert_eq!(summary.clean, !infected);
+            assert_eq!(summary.infected_files, Some(if infected { 1 } else { 0 }));
+            assert!(crate::report::report_path(&config, &id).is_file());
+            if action == "quarantine" {
+                assert!(!target.exists());
+                assert_eq!(
+                    fs::read_to_string(config.quarantine_dir.join("fixture.txt")).unwrap(),
+                    fixture_text
+                );
+            } else if action == "remove" {
+                assert!(!target.exists());
+            } else {
+                assert!(target.exists());
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pending_cancellation_and_worker_claim_have_only_one_winner() {
+        let (root, config, target) = fixture("cancel-race");
+        for _ in 0..32 {
+            let id = submit_fixture(&config, &target, ClamAvOptions::default());
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let cancel_config = config.clone();
+            let cancel_id = id.clone();
+            let cancel_barrier = barrier.clone();
+            let cancel = std::thread::spawn(move || {
+                cancel_barrier.wait();
+                crate::queue::cancel_pending_job(&cancel_config, &cancel_id).unwrap()
+            });
+            let worker_config = config.clone();
+            let worker_barrier = barrier.clone();
+            let worker = std::thread::spawn(move || {
+                worker_barrier.wait();
+                crate::queue::take_next_pending(&worker_config).unwrap()
+            });
+            barrier.wait();
+            let cancelled = cancel.join().unwrap();
+            let claimed = worker.join().unwrap();
+            assert_ne!(
+                cancelled.is_some(),
+                claimed.is_some(),
+                "both paths claimed a single request"
+            );
+            if let Some((_, path)) = claimed {
+                fs::remove_file(path).unwrap();
+            }
+            if let Some(job) = cancelled {
+                fs::remove_file(config.failed_dir.join(job.filename)).unwrap();
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 }

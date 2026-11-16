@@ -1,0 +1,20 @@
+{
+  "product": "INFRA-AV",
+  "headline": "infra-av",
+  "components": [
+    "infra-av",
+    "backend",
+    "web",
+    "installer"
+  ],
+  "generated": [
+    {
+      "kind": "json",
+      "path": "frontend/src/version.json"
+    },
+    {
+      "kind": "json",
+      "path": "frontend/public/version.json"
+    }
+  ]
+}

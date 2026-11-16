@@ -1,0 +1,18 @@
+/* INFRA-AV source adapter, used by standalone and gateway builds alike. */
+.av-page-header { min-height: var(--u-header-h); padding: .75rem var(--u-pad); }
+.av-header-content, .av-header-actions { gap: 1rem; flex-wrap: wrap; min-width: 0; }
+.av-page-title { margin: 0; font: 600 var(--u-text-xl)/1.333 var(--u-font); letter-spacing: normal; }
+.av-page-content { padding: var(--u-pad); }
+.av-workspace-grid { grid-template-columns: minmax(18rem,24rem) minmax(0,1fr); align-items: start; }
+.av-workspace-grid > * { min-width: 0; }
+.av-workspace :is(button:not([role="checkbox"]):not([role="switch"]), input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select),
+.av-page-header button { min-height: var(--u-control-h); font-size: var(--u-text-sm); border-radius: var(--u-radius); }
+.av-workspace button:not([role="checkbox"]):not([role="switch"]), .av-page-header button { line-height: 1.25rem; padding-top: calc((var(--u-control-h) - 1.25rem - 2px) / 2); padding-bottom: calc((var(--u-control-h) - 1.25rem - 2px) / 2); }
+.av-workspace h2 { font-size: var(--u-text-lg); line-height: 1.444; font-weight: 600; }
+.av-workspace h3 { font-size: var(--u-text-base); line-height: 1.5; font-weight: 600; }
+.av-workspace .rounded-lg { border-radius: var(--u-radius-lg); }
+.av-workspace :is(.text-\[10px\],.text-\[11px\]) { font-size: var(--u-text-xs); }
+.av-workspace input, .av-workspace select, .av-workspace textarea { border-color: var(--u-input); }
+.av-workspace button:focus-visible, .av-page-header button:focus-visible { outline: 2px solid var(--u-ring); outline-offset: 2px; }
+@media (max-width: 900px) { .av-workspace-grid { grid-template-columns: minmax(0,1fr); } }
+@media (max-width: 767px) { .av-page-header, .av-page-content { padding: 1rem; } }

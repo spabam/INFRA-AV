@@ -1,0 +1,60 @@
+/* Framework-independent component catalogue. Native React uses the same CSS. */
+.v-button, .uuuui-btn { display: inline-flex; align-items: center; justify-content: center; gap: .5rem; min-height: var(--v-control-height); padding: calc((var(--v-control-height) - var(--v-line-ui) - 2px) / 2) .75rem; border: 1px solid var(--v-input-border); border-radius: var(--v-radius); background: var(--v-surface); color: var(--v-text); font: 500 var(--v-text-ui)/var(--v-line-ui) var(--v-font-sans); text-decoration: none; cursor: pointer; transition: background-color var(--v-motion); }
+.v-button:hover, .uuuui-btn:hover { background: var(--v-surface-hover); }
+.v-button-primary, .uuuui-button-primary { background: var(--v-primary); border-color: var(--v-primary); color: var(--v-on-primary); }
+.v-button-primary:hover, .uuuui-button-primary:hover { background: var(--v-primary-hover); border-color: var(--v-primary-hover); }
+.v-button-danger, .uuuui-button-danger { color: var(--v-danger); border-color: var(--v-danger); }
+.v-button-danger:hover, .uuuui-button-danger:hover { background: var(--v-danger-soft); }
+.v-button-quiet { background: transparent; border-color: transparent; }
+.v-button[aria-busy="true"] { cursor: progress; }
+.v-input, .uuuui-input, .uuuui-select { min-height: var(--v-control-height); min-width: 0; max-width: 100%; padding: calc((var(--v-control-height) - var(--v-line-ui) - 2px) / 2) .75rem; color: var(--v-text); background: var(--v-surface); border: 1px solid var(--v-input-border); border-radius: var(--v-radius); font: 400 var(--v-text-ui)/var(--v-line-ui) var(--v-font-sans); }
+.v-input[aria-invalid="true"] { border-color: var(--v-danger); }
+.v-field { display: grid; align-content: start; gap: .375rem; min-width: 0; font-size: var(--v-text-ui); }
+.v-field > label { font-weight: 500; }
+.v-help, .v-caption { font-size: var(--v-text-caption); line-height: var(--v-line-caption); color: var(--v-text-muted); }
+.v-card, .uuuui-card { min-width: 0; padding: var(--v-card-padding); border: 1px solid var(--v-border); border-radius: var(--v-radius-card); background: var(--v-surface); }
+.v-page-header { display: flex; align-items: center; justify-content: space-between; gap: var(--v-gap); flex-wrap: wrap; min-height: var(--v-page-header-height); padding: .5rem var(--v-gutter); background: var(--v-surface); border-bottom: 1px solid var(--v-border); }
+.v-page-header h1 { margin: 0; }
+.v-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.v-stack { display: grid; gap: var(--v-gap); min-width: 0; }
+.v-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: var(--v-gap); }
+.v-nav-item { display: inline-flex; align-items: center; gap: .5rem; min-height: var(--v-control-height); padding: .5rem .75rem; border-radius: var(--v-radius); color: var(--v-text); font-size: var(--v-text-ui); text-decoration: none; }
+.v-nav-item:hover { background: var(--v-surface-hover); }
+.v-nav-item[aria-current="page"], .v-nav-item[aria-selected="true"] { background: var(--v-selection); color: var(--v-selection-text); box-shadow: inset 3px 0 var(--v-primary); font-weight: 600; }
+.v-badge, .uuuui-badge { display: inline-flex; align-items: center; gap: .25rem; padding: .125rem .5rem; border: 1px solid var(--v-border); border-radius: var(--v-radius-pill); font-size: var(--v-text-caption); font-weight: 500; line-height: var(--v-line-caption); }
+.v-badge[data-tone="success"], .uuuui-badge.ok { color: var(--v-success); background: var(--v-success-soft); }
+.v-badge[data-tone="danger"], .uuuui-badge.bad { color: var(--v-danger); background: var(--v-danger-soft); }
+.v-badge[data-tone="warning"], .uuuui-badge.warn { color: var(--v-warning); background: var(--v-warning-soft); }
+.v-badge[data-tone="info"] { color: var(--v-info); background: var(--v-selection); }
+.v-table-scroll, .uuuui-table-scroll { max-width: 100%; overflow-x: auto; }
+.v-table, .uuuui-table { width: 100%; border-collapse: collapse; font-size: var(--v-text-ui); }
+.v-table :is(th, td), .uuuui-table :is(th, td) { height: var(--v-row-height); padding: .5rem .75rem; text-align: left; border-bottom: 1px solid var(--v-border); }
+.v-table th, .uuuui-table th { color: var(--v-text-muted); font-weight: 500; background: var(--v-surface-hover); }
+.v-table tbody tr:hover { background: var(--v-surface-hover); }
+.v-table [aria-selected="true"] { background: var(--v-selection); }
+.v-table caption { text-align: left; padding-bottom: .75rem; font-weight: 600; }
+.v-dialog, .uuuui-dialog { width: min(42.5rem, calc(100% - 2rem)); max-height: 85dvh; overflow: auto; padding: var(--v-card-padding); color: var(--v-text); background: var(--v-surface); border: 1px solid var(--v-border); border-radius: var(--v-radius-card); box-shadow: var(--v-shadow); }
+.v-dialog::backdrop, .uuuui-dialog::backdrop { background: var(--v-overlay); }
+.v-dialog-head, .uuuui-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+.v-dialog-head h2, .uuuui-dialog-head h2 { margin: 0; }
+.v-state, .uuuui-empty-state, .uuuui-error-state { padding: var(--v-card-padding); border: 1px solid var(--v-border); border-radius: var(--v-radius-card); background: var(--v-surface); overflow-wrap: anywhere; }
+.v-state h2, .uuuui-empty-state h2 { margin: 0 0 .5rem; }
+.v-state[data-tone="danger"], .uuuui-error-state { color: var(--v-danger); border-left: 3px solid var(--v-danger); }
+.v-state[data-tone="warning"] { color: var(--v-warning); background: var(--v-warning-soft); }
+.v-progress { width: 100%; height: .5rem; border: 0; border-radius: var(--v-radius-pill); overflow: hidden; accent-color: var(--v-primary); background: var(--v-border); }
+.v-progress::-webkit-progress-bar { background: var(--v-border); }
+.v-progress::-webkit-progress-value { background: var(--v-primary); }
+.v-progress::-moz-progress-bar { background: var(--v-primary); }
+.v-log { padding: 1rem; overflow: auto; max-height: 30rem; color: var(--v-text); background: var(--v-canvas); border: 1px solid var(--v-border); border-radius: var(--v-radius); white-space: pre-wrap; overflow-wrap: anywhere; font: 400 var(--v-text-code)/var(--v-line-ui) var(--v-font-mono); font-variant-ligatures: none; }
+.v-prose { font: 400 var(--v-text-body)/var(--v-line-body) var(--v-font-sans); overflow-wrap: anywhere; }
+.v-prose :is(pre, code) { font-family: var(--v-font-mono); font-size: var(--v-text-code); }
+.v-skip { position: fixed; top: .5rem; left: .5rem; transform: translateY(-200%); z-index: 99999; padding: .5rem 1rem; background: var(--v-surface); color: var(--v-primary); border: 2px solid var(--v-focus); border-radius: var(--v-radius); }
+.v-skip:focus { transform: none; }
+/* Platform footer — a thin shared status/attribution bar rendered across every
+   module (shell, HV, AV, VAPT, Tickets, LISA) so the suite reads as one product. */
+.v-footer { display: flex; align-items: center; gap: var(--v-space-3); padding: var(--v-space-2) var(--v-space-4); border-top: 1px solid var(--v-border); background: var(--v-surface); color: var(--v-text-muted); font: 400 .75rem/1.4 var(--v-font-sans); }
+.v-footer .v-footer-brand { font-weight: 600; color: var(--v-text); }
+.v-footer .v-footer-sep { opacity: .5; }
+.v-footer .v-footer-end { margin-inline-start: auto; display: flex; align-items: center; gap: var(--v-space-3); flex-wrap: wrap; justify-content: flex-end; }
+.v-footer a { color: inherit; text-decoration: none; }
+.v-footer a:hover { color: var(--v-text); text-decoration: underline; }

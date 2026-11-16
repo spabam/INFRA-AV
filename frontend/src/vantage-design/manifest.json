@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "version": "1.0.2",
+  "files": {
+    "VERSION": "9fd28642d3aca191e5c7fc2383cfd6fabb2aac8743f029dabb8989ac584e31bc",
+    "components.css": "d16b92fcb724c0421f160d2ef10c40d80ce1678a54a0393168e4a8f4348d4903",
+    "design-system.css": "dda296dbe7afa3b906cac01830529435d15903f7008ed8f21f81e31674b1ed11",
+    "fonts/Inter-LICENSE.txt": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a",
+    "fonts/InterVariable-Italic.woff2": "e564f652916db6c139570fefb9524a77c4d48f30c92928de9db19b6b5c7a262a",
+    "fonts/InterVariable.woff2": "693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3",
+    "fonts/JetBrainsMono-Bold.woff2": "c503cc5ec5f8b2c7666b7ecda1adf44bd45f2e6579b2eba0fc292150416588a2",
+    "fonts/JetBrainsMono-OFL.txt": "30f0c136e3c88e422d0791acd97238870f9054a9729bc34cf2ff0d4ed8cac4ad",
+    "fonts/JetBrainsMono-Regular.woff2": "a9cb1cd82332b23a47e3a1239d25d13c86d16c4220695e34b243effa999f45f2",
+    "fonts/SOURCES.md": "ef7787d9bc3cc95cd0b7843053c54fca32818f4e68b80477e270e3617ddbedc0",
+    "runtime.d.ts": "9a216795ee3ad96dbbff262dd49312c368fd08b31983352ff447d5c55058ed33",
+    "runtime.js": "9feddce98fb14ea2fdba187f738b31ab24416f9d58b0b6d72c8c1f81925f56b7",
+    "tailwind3.css": "958a9ad47dc740966c8650741064f39e8f3c8cc26507414258973a6191eff204",
+    "tokens.css": "dfb80bc17c6cf0c69e5d77af3ca637ced71b3eaa0f070feecdef8451cc6dc115",
+    "verify.py": "c97e07464dbcadfde4b15b1d69f060ab27cafdf52f0e9afe0e5a22ee9a5ec94c"
+  }
+}

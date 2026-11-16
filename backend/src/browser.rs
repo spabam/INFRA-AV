@@ -239,6 +239,8 @@ mod tests {
             host: "127.0.0.1".to_string(),
             port: 5000,
             jwt_secret: "test-secret".to_string(),
+            broker_secret: None,
+            broker_secret_previous: None,
             data_dir: root.join("data"),
             pending_dir: root.join("data/action/pending"),
             processing_dir: root.join("data/action/processing"),

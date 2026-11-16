@@ -12,10 +12,10 @@ use crate::browser;
 use crate::clamav::probe_command;
 use crate::config::AppConfig;
 use crate::models::{
-    ApiEnvelope, ApiResponse, HealthResponse, LoginRequest, LoginResponse, ScanActionRequest,
-    ScanBrowseRequest, ScanControlRequest, ScanControlResponse, ScanListRequest,
-    ScanListResponse, ScanReportResponse, ScanStatusRequest, ScanStatusResponse, SignatureUpdateResponse,
-    JobStatus,
+    ApiEnvelope, ApiResponse, HealthResponse, JobStatus, LoginRequest, LoginResponse,
+    ScanActionRequest, ScanBrowseRequest, ScanControlRequest, ScanControlResponse, ScanListRequest,
+    ScanListResponse, ScanReportResponse, ScanStatusRequest, ScanStatusResponse,
+    SignatureUpdateResponse,
 };
 use crate::{queue, report, worker};
 
@@ -64,6 +64,9 @@ async fn dispatch(
 ) -> Result<HttpResponse> {
     match envelope.action.as_str() {
         "auth.login" => {
+            if auth::directory_enabled() {
+                return Ok(forbidden("Sign in through UUUUI"));
+            }
             let payload: LoginRequest =
                 serde_json::from_value(envelope.payload).context("invalid login payload")?;
             let role = auth::authenticate(&state.config, &payload.username, &payload.password)?;
@@ -75,6 +78,15 @@ async fn dispatch(
             }))
         }
         "auth.sso" => {
+            if auth::directory_enabled() {
+                let claims = claims_from_request(&request, &state.config)?;
+                let token = auth::issue_token(&state.config, &claims.sub, &claims.role)?;
+                return Ok(ok(LoginResponse {
+                    token,
+                    username: claims.sub,
+                    role: claims.role,
+                }));
+            }
             let secret = state
                 .config
                 .broker_secret
@@ -108,7 +120,8 @@ async fn dispatch(
             let (freshclam_ok, freshclam_output) =
                 probe_command(&state.config.freshclam_bin, "--version");
             Ok(ok(HealthResponse {
-                backend_version: env!("CARGO_PKG_VERSION").to_string(),
+                product_version: crate::version::VERSION.to_string(),
+                backend_version: crate::version::BACKEND_VERSION.to_string(),
                 clamscan: crate::models::CommandProbe {
                     ok: clamscan_ok,
                     output: clamscan_output,
@@ -135,10 +148,11 @@ async fn dispatch(
             Ok(ok(response))
         }
         "scan.status" => {
-            let _claims = claims_from_request(&request, &state.config)?;
+            let claims = claims_from_request(&request, &state.config)?;
             let payload: ScanStatusRequest =
                 serde_json::from_value(envelope.payload).context("invalid status payload")?;
             let job = queue::load_job(&state.config, &payload.request_id)?
+                .filter(|job| claims.role == "admin" || job.submitted_by == claims.sub)
                 .ok_or_else(|| anyhow!("job not found"))?;
             let result = job.result.clone();
             let report_available = result.is_some();
@@ -164,10 +178,11 @@ async fn dispatch(
             }))
         }
         "scan.report" => {
-            let _claims = claims_from_request(&request, &state.config)?;
+            let claims = claims_from_request(&request, &state.config)?;
             let payload: ScanStatusRequest =
                 serde_json::from_value(envelope.payload).context("invalid report payload")?;
             let job = queue::load_job(&state.config, &payload.request_id)?
+                .filter(|job| claims.role == "admin" || job.submitted_by == claims.sub)
                 .ok_or_else(|| anyhow!("job not found"))?;
             let (filename, html) = report::read_or_render_report(&state.config, &job)?;
             Ok(ok(ScanReportResponse {
@@ -177,10 +192,12 @@ async fn dispatch(
             }))
         }
         "scan.list" => {
-            let _claims = claims_from_request(&request, &state.config)?;
+            let claims = claims_from_request(&request, &state.config)?;
             let payload: ScanListRequest =
                 serde_json::from_value(envelope.payload).unwrap_or(ScanListRequest { limit: 20 });
-            let items = queue::list_jobs(&state.config, payload.limit)?;
+            // Non-admin callers only see their own scans; admins see every scan.
+            let owner = (claims.role != "admin").then_some(claims.sub.as_str());
+            let items = queue::list_jobs(&state.config, payload.limit, owner)?;
             Ok(ok(ScanListResponse { items }))
         }
         "scan.pause" => {
@@ -243,7 +260,9 @@ async fn dispatch(
             ensure_manageable_job(&claims, &job)?;
             let response = if path.starts_with(&state.config.pending_dir) {
                 let cancelled = queue::cancel_pending_job(&state.config, &payload.request_id)?
-                    .ok_or_else(|| anyhow!("job not found"))?;
+                    .ok_or_else(|| {
+                        anyhow!("scan started while cancellation was requested; retry Stop")
+                    })?;
                 ScanControlResponse {
                     request_id: cancelled.request_id,
                     status: cancelled.status,
@@ -302,6 +321,15 @@ async fn dispatch(
 }
 
 fn claims_from_request(request: &HttpRequest, config: &AppConfig) -> Result<auth::Claims> {
+    if auth::directory_enabled() {
+        let assertion = request
+            .headers()
+            .get("X-UUUUI-Identity")
+            .ok_or_else(|| anyhow!("invalid token: UUUUI sign-in is required"))?
+            .to_str()
+            .context("invalid token: directory identity header")?;
+        return auth::directory_claims(config, assertion);
+    }
     let auth_header = request
         .headers()
         .get("Authorization")
@@ -311,7 +339,11 @@ fn claims_from_request(request: &HttpRequest, config: &AppConfig) -> Result<auth
     let token = auth_header
         .strip_prefix("Bearer ")
         .ok_or_else(|| anyhow!("authorization header must use Bearer"))?;
-    auth::decode_token(config, token)
+    let claims = auth::decode_token(config, token)?;
+    // Standalone sessions carry an 8 h token; re-check the current user store so
+    // a role change to a locally-managed account is honored immediately.
+    auth::reauthorize_native(config, &claims)?;
+    Ok(claims)
 }
 
 fn build_cors(config: &AppConfig) -> Cors {

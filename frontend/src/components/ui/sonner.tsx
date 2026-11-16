@@ -1,10 +1,15 @@
-import { useTheme } from "next-themes";
+import { useEffect, useState } from "react";
 import { Toaster as Sonner, toast } from "sonner";
 
 type ToasterProps = React.ComponentProps<typeof Sonner>;
 
 const Toaster = ({ ...props }: ToasterProps) => {
-  const { theme = "system" } = useTheme();
+  const [theme, setTheme] = useState<"light" | "dark">(() => document.documentElement.dataset.uuuuiTheme === "dark" ? "dark" : "light");
+  useEffect(() => {
+    const update = () => setTheme(document.documentElement.dataset.uuuuiTheme === "dark" ? "dark" : "light");
+    window.addEventListener("vantage-appearance", update);
+    return () => window.removeEventListener("vantage-appearance", update);
+  }, []);
 
   return (
     <Sonner

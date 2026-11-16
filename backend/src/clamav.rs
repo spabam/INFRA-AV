@@ -1,6 +1,6 @@
 use std::fs;
 use std::os::unix::fs::FileTypeExt;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
@@ -207,7 +207,7 @@ pub fn parse_summary(lines: &[String], exit_code: i32) -> Option<ScanSummary> {
         duration: None,
         start_date: None,
         end_date: None,
-        clean: exit_code == 0,
+        clean: false,
     };
 
     let mut found_summary = false;
@@ -240,6 +240,7 @@ pub fn parse_summary(lines: &[String], exit_code: i32) -> Option<ScanSummary> {
         }
     }
 
+    summary.clean = exit_code == 0 && summary.infected_files == Some(0);
     found_summary.then_some(summary)
 }
 
@@ -314,6 +315,27 @@ fn validate_target(config: &AppConfig, target: &str, scan_type: ScanType) -> Res
     Ok(resolved)
 }
 
+/// Confine a caller-supplied path to one of `roots`. A `starts_with` check on
+/// the raw path is not enough: component-wise `starts_with` accepts
+/// `<root>/../../escape`, so a `..` could redirect clamscan's `--move`/`--copy`/
+/// `--database`/`--tempdir` outside the intended directory. We reject any `..`
+/// component outright, and — resolving symlinks whenever the path (or a root)
+/// already exists — require the resolved location to stay under a resolved root,
+/// so a symlink cannot redirect writes out either.
+fn within_roots(path: &Path, roots: &[PathBuf]) -> bool {
+    if path
+        .components()
+        .any(|component| component == Component::ParentDir)
+    {
+        return false;
+    }
+    let resolved = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    roots.iter().any(|root| {
+        let root = fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+        resolved.starts_with(&root)
+    })
+}
+
 fn validate_optional_write_path(config: &AppConfig, value: &str) -> Result<Option<PathBuf>> {
     if value.trim().is_empty() {
         return Ok(None);
@@ -324,11 +346,7 @@ fn validate_optional_write_path(config: &AppConfig, value: &str) -> Result<Optio
         bail!("write path must be absolute");
     }
 
-    let allowed = config
-        .allowed_write_roots
-        .iter()
-        .any(|root| path.starts_with(root));
-    if !allowed {
+    if !within_roots(&path, &config.allowed_write_roots) {
         bail!(
             "write path {} is outside the allowed write roots",
             path.display()
@@ -351,11 +369,7 @@ fn validate_optional_database_path(config: &AppConfig, value: &str) -> Result<Op
         bail!("database path {} does not exist", path.display());
     }
 
-    let allowed = config
-        .allowed_database_roots
-        .iter()
-        .any(|root| path.starts_with(root));
-    if !allowed {
+    if !within_roots(&path, &config.allowed_database_roots) {
         bail!(
             "database path {} is outside the allowed database roots",
             path.display()
@@ -376,7 +390,7 @@ fn validate_temp_dir(config: &AppConfig, value: &str) -> Result<PathBuf> {
     if !path.is_absolute() {
         bail!("tempdir must be absolute");
     }
-    if !path.starts_with(&config.temp_dir) {
+    if !within_roots(&path, std::slice::from_ref(&config.temp_dir)) {
         bail!(
             "tempdir {} must stay under {}",
             path.display(),
@@ -418,7 +432,24 @@ fn shell_escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::render_preview;
+    #[test]
+    fn clean_summary_requires_success_and_an_explicit_zero_detection_count() {
+        for (lines, exit_code, clean) in [
+            (vec!["Scanned files: 1"], 0, false),
+            (vec!["Infected files: invalid"], 0, false),
+            (vec!["Infected files: 1"], 0, false),
+            (vec!["Infected files: 0"], 2, false),
+            (vec!["Infected files: 0"], 0, true),
+        ] {
+            let lines = lines.into_iter().map(str::to_string).collect::<Vec<_>>();
+            let summary = super::parse_summary(&lines, exit_code).expect("summary fields present");
+            assert_eq!(summary.clean, clean, "{lines:?}, exit {exit_code}");
+        }
+        assert!(super::parse_summary(&["partial raw output".to_string()], 0).is_none());
+    }
+
+    use super::{render_preview, within_roots};
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn preview_quotes_paths_with_spaces() {
@@ -430,5 +461,23 @@ mod tests {
             ],
         );
         assert!(rendered.contains("'/tmp/with space'"));
+    }
+
+    #[test]
+    fn within_roots_rejects_parent_dir_escapes() {
+        let roots = vec![PathBuf::from("/var/lib/infra-av/quarantine")];
+        // In-root paths are accepted (they need not exist yet).
+        assert!(within_roots(
+            Path::new("/var/lib/infra-av/quarantine/moved"),
+            &roots
+        ));
+        // A `..` component that lexically climbs out is rejected even though a
+        // naive component-wise starts_with would accept it.
+        assert!(!within_roots(
+            Path::new("/var/lib/infra-av/quarantine/../../../etc"),
+            &roots
+        ));
+        // A sibling outside the root is rejected.
+        assert!(!within_roots(Path::new("/etc/cron.d"), &roots));
     }
 }

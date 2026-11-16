@@ -102,6 +102,101 @@ pub fn decode_token(config: &AppConfig, token: &str) -> Result<Claims> {
     Ok(data.claims)
 }
 
+/// True when a locally-stored account's current role no longer matches the role
+/// embedded in a presented token — an immediate demotion/revocation signal.
+fn local_role_revoked(stored_role: Option<&str>, token_role: &str) -> bool {
+    matches!(stored_role, Some(role) if role != token_role)
+}
+
+/// Re-authorize a decoded native token against the CURRENT local user store so a
+/// change to a locally-managed account takes effect immediately instead of
+/// lingering until the 8 h token expires. Subjects absent from the local store
+/// (PAM/system users, or UUUUI SSO subjects) are not locally managed, so their
+/// absence is NOT a rejection — the token expiry still bounds them, and the
+/// UUUUI directory path re-checks membership on every request regardless. Only
+/// standalone (non-directory) sessions reach this check.
+pub fn reauthorize_native(config: &AppConfig, claims: &Claims) -> Result<()> {
+    let stored_role = read_users(config)?
+        .into_iter()
+        .find(|candidate| candidate.username == claims.sub)
+        .map(|user| user.role);
+    if local_role_revoked(stored_role.as_deref(), &claims.role) {
+        bail!("account role changed; please sign in again");
+    }
+    Ok(())
+}
+
+pub fn directory_enabled() -> bool {
+    std::env::var("UUUUI_DIRECTORY_URL").is_ok_and(|value| !value.is_empty())
+}
+
+/// A fresh assertion is supplied by nginx after checking current platform
+/// membership and AV access. A cached AV login token cannot retain old rights.
+pub fn directory_claims(config: &AppConfig, token: &str) -> Result<Claims> {
+    // Accept the current broker secret and, during a rotation overlap window, the
+    // previous one (UUUUI/shared/uuuui-identity/CONTRACT.md).
+    let secrets: Vec<&str> = config
+        .broker_secret
+        .as_deref()
+        .into_iter()
+        .chain(config.broker_secret_previous.as_deref())
+        .collect();
+    verify_directory_identity_with_keys(&secrets, token)
+}
+
+fn verify_directory_identity_with_keys(secrets: &[&str], token: &str) -> Result<Claims> {
+    if secrets.is_empty() {
+        bail!("invalid token: directory verification is not configured");
+    }
+    let mut last_error = None;
+    for secret in secrets {
+        match verify_directory_identity(secret, token) {
+            Ok(claims) => return Ok(claims),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.expect("at least one secret was tried"))
+}
+
+// Verification rules per the UUUUI identity-assertion contract
+// (UUUUI/shared/uuuui-identity/CONTRACT.md): HS256 only, aud=av, not expired,
+// 0 < exp-iat <= 120 s, iat not in the future. MAX_TTL bounds the damage window
+// if a key leaks, independent of whatever exp a forger chooses.
+const DIRECTORY_MAX_TTL_SECONDS: usize = 120;
+const DIRECTORY_SKEW_SECONDS: usize = 30;
+
+fn verify_directory_identity(secret: &str, token: &str) -> Result<Claims> {
+    #[derive(Deserialize)]
+    struct Identity {
+        sub: String,
+        #[serde(default)]
+        native_subject: Option<String>,
+        #[serde(default)]
+        roles: Vec<String>,
+        #[serde(rename = "moduleRole")]
+        module_role: String,
+        exp: usize,
+        iat: usize,
+    }
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.set_audience(&["av"]);
+    validation.leeway = DIRECTORY_SKEW_SECONDS as u64;
+    let identity = decode::<Identity>(token, &DecodingKey::from_secret(secret.as_bytes()), &validation)
+        .context("invalid token: UUUUI directory assertion")?.claims;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as usize)
+        .unwrap_or(0);
+    if identity.exp <= identity.iat
+        || identity.exp - identity.iat > DIRECTORY_MAX_TTL_SECONDS
+        || identity.iat > now + DIRECTORY_SKEW_SECONDS
+    {
+        bail!("invalid token: UUUUI directory assertion lifetime");
+    }
+    let administrator = identity.roles.iter().any(|role| role == "admin" || role == "superadmin") || identity.module_role == "admin";
+    Ok(Claims { sub: identity.native_subject.unwrap_or(identity.sub), role: if administrator { "admin" } else { "member" }.to_string(), exp: identity.exp, iat: identity.iat })
+}
+
 fn authenticate_with_pam(config: &AppConfig, username: &str, password: &str) -> Result<()> {
     let mut context = PamContext::new(
         &config.pam_service,
@@ -183,4 +278,76 @@ pub fn bootstrap_user_file(
     fs::write(output, content).with_context(|| format!("failed to write {}", output.display()))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod directory_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn directory_roles_replace_cached_privileges_and_preserve_native_ownership() {
+        let secret = "isolated-directory-secret";
+        let now = Utc::now().timestamp();
+        let mut claims = json!({"sub":"person@example.test","native_subject":"legacy-av-name","aud":"av","roles":["member"],"moduleRole":"member","iat":now,"exp":now+60});
+        let token = |claims: &serde_json::Value| encode(&Header::default(), claims, &EncodingKey::from_secret(b"isolated-directory-secret")).unwrap();
+        let member = verify_directory_identity(secret, &token(&claims)).unwrap();
+        assert_eq!((member.sub.as_str(), member.role.as_str()), ("legacy-av-name", "member"));
+        claims["moduleRole"] = json!("admin");
+        assert_eq!(verify_directory_identity(secret, &token(&claims)).unwrap().role, "admin");
+        claims["moduleRole"] = json!("member");
+        claims["roles"] = json!(["superadmin"]);
+        assert_eq!(verify_directory_identity(secret, &token(&claims)).unwrap().role, "admin");
+        claims["aud"] = json!("ticket");
+        assert!(verify_directory_identity(secret, &token(&claims)).is_err());
+        claims["aud"] = json!("av");
+        claims["exp"] = json!(now - 120);
+        assert!(verify_directory_identity(secret, &token(&claims)).is_err());
+    }
+
+    // Mirrors UUUUI/shared/uuuui-identity/vectors.json for the av verifier.
+    #[test]
+    fn directory_assertion_conformance() {
+        let current = "uuuui-identity-conformance-key";
+        let previous = "uuuui-identity-conformance-previous-key";
+        let unknown = "uuuui-identity-conformance-unknown-key";
+        let now = Utc::now().timestamp();
+        let sign = |secret: &str, claims: &serde_json::Value| {
+            encode(&Header::default(), claims, &EncodingKey::from_secret(secret.as_bytes())).unwrap()
+        };
+        let base = |iat: i64, ttl: i64| {
+            json!({"sub":"alice@uuuui.local","uid":"11111111-1111-1111-1111-111111111111",
+                   "kind":"app","roles":["member"],"moduleRole":"member","aud":"av","iat":iat,"exp":iat+ttl})
+        };
+        // valid
+        assert!(verify_directory_identity(current, &sign(current, &base(now, 60))).is_ok());
+        // wrong aud
+        let mut wrong_aud = base(now, 60);
+        wrong_aud["aud"] = json!("ticket");
+        assert!(verify_directory_identity(current, &sign(current, &wrong_aud)).is_err());
+        // expired
+        assert!(verify_directory_identity(current, &sign(current, &base(now - 120, 60))).is_err());
+        // iat in the future (beyond skew)
+        assert!(verify_directory_identity(current, &sign(current, &base(now + 120, 60))).is_err());
+        // lifetime over the 120 s cap
+        assert!(verify_directory_identity(current, &sign(current, &base(now, 600))).is_err());
+        // missing sub
+        let mut no_sub = base(now, 60);
+        no_sub.as_object_mut().unwrap().remove("sub");
+        assert!(verify_directory_identity(current, &sign(current, &no_sub)).is_err());
+        // bad signature (signed with a key the verifier does not hold)
+        assert!(verify_directory_identity(current, &sign(unknown, &base(now, 60))).is_err());
+        // key set: current + previous accepted (rotation overlap), unknown rejected
+        let keys = [current, previous];
+        assert!(verify_directory_identity_with_keys(&keys, &sign(current, &base(now, 60))).is_ok());
+        assert!(verify_directory_identity_with_keys(&keys, &sign(previous, &base(now, 60))).is_ok());
+        assert!(verify_directory_identity_with_keys(&keys, &sign(unknown, &base(now, 60))).is_err());
+    }
+
+    #[test]
+    fn local_role_revoked_only_when_stored_role_differs() {
+        assert!(!local_role_revoked(None, "admin")); // not locally stored → not revoked
+        assert!(!local_role_revoked(Some("admin"), "admin")); // unchanged → ok
+        assert!(local_role_revoked(Some("member"), "admin")); // demoted in store → revoked
+    }
 }

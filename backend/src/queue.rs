@@ -93,7 +93,26 @@ pub fn load_job(config: &AppConfig, request_id: &str) -> Result<Option<QueuedJob
     Ok(load_job_with_path(config, request_id)?.map(|(job, _)| job))
 }
 
-pub fn load_job_with_path(config: &AppConfig, request_id: &str) -> Result<Option<(QueuedJob, PathBuf)>> {
+/// A request id is a single safe path segment. It is interpolated into
+/// `{request_id}.av.json` and joined to the queue directories, so a value with
+/// `/` or `..` must never be accepted — otherwise a caller could traverse out
+/// of the queue to read or select arbitrary `*.av.json` files.
+pub fn valid_request_id(request_id: &str) -> bool {
+    !request_id.is_empty()
+        && request_id.len() <= 128
+        && !request_id.contains("..")
+        && request_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+pub fn load_job_with_path(
+    config: &AppConfig,
+    request_id: &str,
+) -> Result<Option<(QueuedJob, PathBuf)>> {
+    if !valid_request_id(request_id) {
+        return Ok(None);
+    }
     let locations = [
         &config.pending_dir,
         &config.processing_dir,
@@ -111,7 +130,14 @@ pub fn load_job_with_path(config: &AppConfig, request_id: &str) -> Result<Option
     Ok(None)
 }
 
-pub fn list_jobs(config: &AppConfig, limit: usize) -> Result<Vec<ScanListItem>> {
+/// List recent jobs. When `owner` is `Some`, only jobs submitted by that user
+/// are returned — non-admin callers must not see other users' scans. Admins
+/// pass `None` to see every job.
+pub fn list_jobs(
+    config: &AppConfig,
+    limit: usize,
+    owner: Option<&str>,
+) -> Result<Vec<ScanListItem>> {
     let locations = [
         &config.pending_dir,
         &config.processing_dir,
@@ -130,6 +156,11 @@ pub fn list_jobs(config: &AppConfig, limit: usize) -> Result<Vec<ScanListItem>> 
             .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
         {
             let job = read_job(&path)?;
+            if let Some(owner) = owner
+                && job.submitted_by != owner
+            {
+                continue;
+            }
             items.push(ScanListItem {
                 request_id: job.request_id,
                 status: job.status,
@@ -140,7 +171,7 @@ pub fn list_jobs(config: &AppConfig, limit: usize) -> Result<Vec<ScanListItem>> 
         }
     }
 
-    items.sort_by(|left, right| right.submitted_at.cmp(&left.submitted_at));
+    items.sort_by_key(|item| std::cmp::Reverse(item.submitted_at));
     items.truncate(limit);
     Ok(items)
 }
@@ -191,28 +222,43 @@ pub fn rebuild_command(config: &AppConfig, job: &QueuedJob) -> Result<CommandSpe
 }
 
 pub fn cancel_pending_job(config: &AppConfig, request_id: &str) -> Result<Option<QueuedJob>> {
-    let pending_path = config.pending_dir.join(format!("{request_id}.av.json"));
-    if !pending_path.exists() {
+    if !valid_request_id(request_id) {
         return Ok(None);
     }
-
-    let mut job = read_job(&pending_path)?;
-    job.status = JobStatus::Cancelled;
-    job.status_updated_at = Utc::now();
-    job.execution = None;
-    job.result = Some(crate::models::JobResult {
-        started_at: None,
-        finished_at: Some(Utc::now()),
-        exit_code: 130,
-        output: vec!["Scan request cancelled before execution.".to_string()],
-        summary: None,
-        error_message: Some("scan stopped by user before execution started".to_string()),
-    });
-
-    let final_path = config.failed_dir.join(&job.filename);
-    write_json_atomic(&final_path, &job)?;
-    fs::remove_file(&pending_path).ok();
-    Ok(Some(job))
+    let pending_path = config.pending_dir.join(format!("{request_id}.av.json"));
+    // Compete with the worker's rename before reading or publishing a cancelled
+    // result. Reading first can let both the canceller and worker own the job.
+    let claim_path = config
+        .processing_dir
+        .join(format!(".cancel-{}.claim", Uuid::new_v4()));
+    match fs::rename(&pending_path, &claim_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("failed to claim pending cancellation"),
+    }
+    let outcome = (|| -> Result<QueuedJob> {
+        let mut job = read_job(&claim_path)?;
+        job.status = JobStatus::Cancelled;
+        job.status_updated_at = Utc::now();
+        job.execution = None;
+        job.result = Some(crate::models::JobResult {
+            started_at: None,
+            finished_at: Some(Utc::now()),
+            exit_code: 130,
+            output: vec!["Scan request cancelled before execution.".to_string()],
+            summary: None,
+            error_message: Some("scan stopped by user before execution started".to_string()),
+        });
+        finalize_job(config, &claim_path, &job)?;
+        Ok(job)
+    })();
+    if outcome.is_err() {
+        // No command has run; leave a failed publication available for an
+        // explicit retry instead of hiding the request in a private claim.
+        fs::rename(&claim_path, &pending_path)
+            .with_context(|| "failed to restore pending cancellation after publication failure")?;
+    }
+    outcome.map(Some)
 }
 
 fn generate_request_id(username: &str) -> String {
@@ -247,4 +293,22 @@ fn count_json_files(directory: &Path) -> Result<usize> {
         .filter_map(|entry| entry.ok().map(|value| value.path()))
         .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
         .count())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_request_id;
+
+    #[test]
+    fn request_id_rejects_traversal_and_separators() {
+        // A server-generated id ("{ts}.{user}.{8hex}.av") is accepted.
+        assert!(valid_request_id("20261115220000.spabam.0a1b2c3d.av"));
+        // Traversal / separators / control characters are rejected so the id
+        // cannot escape the queue directory when joined as "{id}.av.json".
+        assert!(!valid_request_id("../../../../etc/cron.d/evil"));
+        assert!(!valid_request_id("a/b"));
+        assert!(!valid_request_id(".."));
+        assert!(!valid_request_id(""));
+        assert!(!valid_request_id("a b"));
+    }
 }
