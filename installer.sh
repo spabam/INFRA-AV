@@ -1,23 +1,16 @@
 #!/usr/bin/env bash
 
-# --- VANTAGE edition selector (new = UUUUI-integrated [default], old = standalone) ---
-# Asks which edition to install unless VANTAGE_EDITION (new|old) is set; a
-# non-interactive run defaults to new. 'old' installs the standalone product
-# unchanged; 'new' additionally permits the UUUUI broker SSO secret and the
-# :31337 origin (all additive and env-gated). Exported for the rest of install.
-: "${VANTAGE_EDITION:=}"
-if [ -z "${VANTAGE_EDITION}" ]; then
-  if [ -t 0 ]; then
-    printf 'Install which edition? [1] new (UUUUI-integrated, default)  [2] old (standalone): ' >&2
-    read -r __vantage_ed || __vantage_ed=""
-    case "${__vantage_ed}" in 2|old|o|O) VANTAGE_EDITION=old ;; *) VANTAGE_EDITION=new ;; esac
-  else
-    VANTAGE_EDITION=new
-  fi
-fi
-case "${VANTAGE_EDITION}" in new|old) ;; *) echo "VANTAGE_EDITION must be 'new' or 'old'" >&2; exit 2 ;; esac
+# --- VANTAGE edition: new (UUUUI-integrated) ONLY ---
+# The old standalone edition was removed 2026-11-18. VANTAGE installs only the new,
+# UUUUI-integrated edition (one UI on :31337); 'old'/'standalone' is refused.
+: "${VANTAGE_EDITION:=new}"
+case "${VANTAGE_EDITION}" in
+  new) ;;
+  old|standalone|2|o|O) echo "[vantage] the old standalone edition has been removed; only the new UUUUI-integrated edition is available" >&2; exit 2 ;;
+  *) echo "VANTAGE_EDITION must be 'new'" >&2; exit 2 ;;
+esac
 export VANTAGE_EDITION
-printf '[vantage] installing the %s edition\n' "${VANTAGE_EDITION}" >&2
+printf '[vantage] installing the new (UUUUI-integrated) edition\n' >&2
 # --- end edition selector ---
 
 # Ensure the shared INFRA authentication helper exists without replacing it.
