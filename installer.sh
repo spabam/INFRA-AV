@@ -11,6 +11,11 @@ case "${VANTAGE_EDITION}" in
 esac
 export VANTAGE_EDITION
 printf '[vantage] installing the new (UUUUI-integrated) edition\n' >&2
+# The standalone nginx web front (INFRA-AV HTTPS on :8099 + /var/www/infra-av/frontend)
+# belonged to the removed standalone edition and collides with the UUUUI broker (:8099).
+# In the integrated edition UUUUI serves INFRA-AV through its gateway (:31337), so the
+# front is skipped. Off by default; INFRA_AV_STANDALONE_FRONT=1 restores the retired front.
+STANDALONE_FRONT="${INFRA_AV_STANDALONE_FRONT:-0}"
 # --- end edition selector ---
 
 # Ensure the shared INFRA authentication helper exists without replacing it.
@@ -669,8 +674,10 @@ enable_services() {
   systemctl enable --now infra-av-backend.service
   systemctl restart infra-av-backend.service
   systemctl enable --now cron
-  systemctl enable --now nginx
-  systemctl restart nginx
+  if [[ "$STANDALONE_FRONT" == 1 ]]; then
+    systemctl enable --now nginx
+    systemctl restart nginx
+  fi
 }
 
 warm_up_clamav() {
@@ -724,11 +731,12 @@ verify_installation() {
     "$USERS_FILE"
     "$SERVICE_FILE"
     "$CRON_FILE"
-    "$NGINX_SITE"
     "$PAM_SERVICE_FILE"
-    "$TLS_CERT_FILE"
-    "$TLS_KEY_FILE"
   )
+  # The standalone nginx front's artifacts only exist when it is installed.
+  if [[ "$STANDALONE_FRONT" == 1 ]]; then
+    required_files+=("$NGINX_SITE" "$TLS_CERT_FILE" "$TLS_KEY_FILE")
+  fi
   local path
   for path in "${required_files[@]}"; do
     if [[ ! -e "$path" ]]; then
@@ -744,9 +752,11 @@ verify_installation() {
     exit 1
   fi
 
-  if ! systemctl is-active --quiet nginx; then
-    echo "nginx is not active after installation." >&2
-    exit 1
+  if [[ "$STANDALONE_FRONT" == 1 ]]; then
+    if ! systemctl is-active --quiet nginx; then
+      echo "nginx is not active after installation." >&2
+      exit 1
+    fi
   fi
 
   if ! systemctl is-active --quiet cron; then
@@ -754,14 +764,16 @@ verify_installation() {
     exit 1
   fi
 
-  if ! curl -kfsS "https://127.0.0.1:$NGINX_PORT/" >/dev/null; then
-    echo "HTTPS frontend check failed on https://127.0.0.1:$NGINX_PORT/." >&2
-    exit 1
-  fi
+  if [[ "$STANDALONE_FRONT" == 1 ]]; then
+    if ! curl -kfsS "https://127.0.0.1:$NGINX_PORT/" >/dev/null; then
+      echo "HTTPS frontend check failed on https://127.0.0.1:$NGINX_PORT/." >&2
+      exit 1
+    fi
 
-  if [[ "$(curl -ksS -o /dev/null -w '%{http_code}' "https://127.0.0.1:$NGINX_PORT/favicon.ico")" != "204" ]]; then
-    echo "Favicon removal check failed: expected HTTPS /favicon.ico to return 204." >&2
-    exit 1
+    if [[ "$(curl -ksS -o /dev/null -w '%{http_code}' "https://127.0.0.1:$NGINX_PORT/favicon.ico")" != "204" ]]; then
+      echo "Favicon removal check failed: expected HTTPS /favicon.ico to return 204." >&2
+      exit 1
+    fi
   fi
 
   if ! curl -fsS "http://127.0.0.1:$BACKEND_PORT/api" \
@@ -769,6 +781,15 @@ verify_installation() {
     -d '{"action":"health.check","payload":{}}' >/dev/null; then
     echo "Backend API health check failed on http://127.0.0.1:$BACKEND_PORT/api." >&2
     exit 1
+  fi
+
+  # Authenticated checks need a password we know. When the installer REUSED a pre-existing
+  # admin account (FALLBACK_ACCOUNT_MODE=reused) its password is unknown — ADMIN_PASSWORD
+  # is empty — so logging in would fail with HTTP 400. The health check above already
+  # proves the backend is up; skip the authenticated probes in that case.
+  if [[ "$FALLBACK_ACCOUNT_MODE" != "created" || -z "$ADMIN_PASSWORD" ]]; then
+    echo "Admin account reused (password preserved); skipping authenticated verification probes." >&2
+    return
   fi
 
   local login_json token browse_json signatures_json
@@ -836,12 +857,27 @@ print_summary() {
   local web_host
   web_host="$(display_web_host)"
 
+  local web_access tls_summary front_service
+  if [[ "$STANDALONE_FRONT" == 1 ]]; then
+    web_access="Web UI (HTTPS only): https://$web_host:$NGINX_PORT/"
+    tls_summary="TLS files:
+  Certificate: $TLS_CERT_FILE
+  Private key: $TLS_KEY_FILE
+"
+    front_service="  $NGINX_SITE
+"
+  else
+    web_access="Web UI: the unified UUUUI shell on https://<host>:31337/ (INFRA-AV tab). The standalone nginx front was removed."
+    tls_summary=""
+    front_service=""
+  fi
+
   cat <<EOF
 
 INFRA-AV installation completed.
 
 Usage:
-  Web UI (HTTPS only): https://$web_host:$NGINX_PORT/
+  $web_access
 
 Authentication:
   PAM service:         $PAM_SERVICE
@@ -855,22 +891,15 @@ Frontend Features:
   Scan controls:       pause, resume, and stop on live clamscan processes
 
 Ports:
-  nginx HTTPS listener: $NGINX_PORT/tcp
   backend internal API: $BACKEND_HOST:$BACKEND_PORT/tcp
 
 Backend API:
   Direct internal URL: http://$BACKEND_HOST:$BACKEND_PORT/api
-  Browser entrypoint:  https://$web_host:$NGINX_PORT/
 
-TLS files:
-  Certificate: $TLS_CERT_FILE
-  Private key: $TLS_KEY_FILE
-
-Service files:
+${tls_summary}Service files:
   $SERVICE_FILE
   $CRON_FILE
-  $NGINX_SITE
-  $PAM_SERVICE_FILE
+${front_service}  $PAM_SERVICE_FILE
   $ENV_FILE
 
 Installed binary:
@@ -907,13 +936,13 @@ main() {
   build_backend
   deploy_backend
   build_frontend
-  deploy_frontend
+  if [[ "$STANDALONE_FRONT" == 1 ]]; then deploy_frontend; fi
   write_env_file
   bootstrap_admin_user
   write_pam_service
   write_systemd_service
   write_cron_file
-  write_nginx_site
+  if [[ "$STANDALONE_FRONT" == 1 ]]; then write_nginx_site; fi
   warm_up_clamav
   enable_services
   verify_installation
