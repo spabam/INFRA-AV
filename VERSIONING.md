@@ -5,8 +5,13 @@ and the product headline. This follows VAPT's `10.<release>.<YYYYMMDDHHMM>` rule
 
 - Major is fixed at **10**.
 - The release counter increases once on each day that component changes.
-- The timestamp records its latest change to minute precision, using the author's
-  local clock, as in VAPT. A later same-day change keeps the counter.
+- The timestamp records its latest change to minute precision. A later
+  same-day change keeps the counter.
+  All machines use one product timezone (default `Europe/Berlin`, override with
+  `"timezone"` in `versioning.json`), not their local zone: products are edited
+  concurrently from computers in different timezones (SSH/X2Go, shared Dropbox).
+  A recorded timestamp ahead of that clock (a machine with a wrong clock, or the
+  daylight-saving fall-back hour) is advanced by one minute instead of failing.
 - Unchanged components keep their versions. The product headline always moves
   when `bump` runs. These new registries start at release 1 on adoption;
   existing source history and VAPT's historical counters are retained.
@@ -28,7 +33,7 @@ bash scripts/version.sh check                # read-only consistency check
 `bump` validates all component names and timestamps before writing, automatically
 updates the headline, and regenerates `version.json` plus the declared API, CLI
 and interface artifacts. Do not edit generated files directly. `--at YYYYMMDDHHMM`
-is available for explicit release preparation; timestamps cannot move backwards.
+is available for explicit release preparation and must not move backwards.
 Two changes in the same minute share the timestamp, matching VAPT's precision.
 
 Builds and installers validate/reuse the recorded source release; rerunning an

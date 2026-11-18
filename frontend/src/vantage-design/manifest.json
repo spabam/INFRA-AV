@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "version": "1.0.2",
+  "version": "1.0.4",
   "files": {
-    "VERSION": "9fd28642d3aca191e5c7fc2383cfd6fabb2aac8743f029dabb8989ac584e31bc",
-    "components.css": "d16b92fcb724c0421f160d2ef10c40d80ce1678a54a0393168e4a8f4348d4903",
+    "VERSION": "d1b77b88f4b9f675a900e4143ac768a21218623cfe1703ca43162388c3271bd6",
+    "components.css": "7e705028cadfdba3a77c4ee698b91b3534bc7d852f9ce77c4aa2cb4cba4a78bc",
     "design-system.css": "dda296dbe7afa3b906cac01830529435d15903f7008ed8f21f81e31674b1ed11",
     "fonts/Inter-LICENSE.txt": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a",
     "fonts/InterVariable-Italic.woff2": "e564f652916db6c139570fefb9524a77c4d48f30c92928de9db19b6b5c7a262a",

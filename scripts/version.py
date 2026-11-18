@@ -20,6 +20,11 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 PATTERN = re.compile(r"10\.([1-9][0-9]*)\.([0-9]{12})\Z")
+# Products are edited from several computers in different timezones, often at
+# the same time over SSH/X2Go and a shared Dropbox checkout. Every machine must
+# therefore stamp versions in one product timezone, never its own local zone.
+# versioning.json may override it with "timezone": "<IANA zone>".
+DEFAULT_TIMEZONE = "Europe/Berlin"
 
 
 def timestamp(value: str) -> str:
@@ -27,6 +32,24 @@ def timestamp(value: str) -> str:
         raise ValueError("timestamp must be YYYYMMDDHHMM")
     dt.datetime.strptime(value, "%Y%m%d%H%M")
     return value
+
+
+def product_now(config: dict) -> tuple[str, str]:
+    """Current YYYYMMDDHHMM in the product timezone, independent of TZ/locale."""
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    zone = config.get("timezone", DEFAULT_TIMEZONE)
+    if not isinstance(zone, str) or not zone:
+        raise ValueError("versioning.json timezone must be an IANA zone name")
+    try:
+        tz = ZoneInfo(zone)
+    except (ZoneInfoNotFoundError, ValueError) as error:
+        raise ValueError(f"unknown version timezone {zone!r}; install tzdata or fix versioning.json") from error
+    return dt.datetime.now(dt.timezone.utc).astimezone(tz).strftime("%Y%m%d%H%M"), zone
+
+
+def next_minute(value: str) -> str:
+    return (dt.datetime.strptime(value, "%Y%m%d%H%M") + dt.timedelta(minutes=1)).strftime("%Y%m%d%H%M")
 
 
 def load(root: Path) -> tuple[dict, dict[str, str]]:
@@ -148,11 +171,23 @@ def main(argv: list[str] | None = None) -> int:
             if unknown:
                 raise ValueError("unknown component(s): " + ", ".join(sorted(unknown)))
             if args.command == "bump":
-                now = args.at or dt.datetime.now().strftime("%Y%m%d%H%M")
+                latest = max(versions[name].rsplit(".", 1)[1] for name in selected)
+                if args.at:
+                    now = args.at
+                    if now < latest:
+                        raise ValueError("a version timestamp cannot move backwards")
+                else:
+                    now, zone = product_now(config)
+                    if now < latest:
+                        # A recorded stamp ahead of the product clock comes from a
+                        # machine with a wrong clock/timezone, or the daylight-saving
+                        # fall-back hour. Stay strictly monotonic instead of failing.
+                        stamp = next_minute(latest)
+                        print(f"version.sh: recorded timestamp {latest} is ahead of the current {zone} time {now}; "
+                              f"using {stamp} so versions never move backwards", file=sys.stderr)
+                        now = stamp
                 for name in selected:
                     major, release, previous = versions[name].split(".")
-                    if now < previous:
-                        raise ValueError("a version timestamp cannot move backwards")
                     versions[name] = f"{major}.{int(release) + (now[:8] != previous[:8])}.{now}"
             generated = outputs(ROOT, config, versions)
             if args.command == "bump":

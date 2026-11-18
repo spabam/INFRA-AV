@@ -1,5 +1,7 @@
 # INFRA-AV
 
+> Folder: `VANTAGE/Antivirus/` (formerly `INFRA-AV/`); the product keeps the name INFRA-AV. In UUUUI it appears as **Antivirus** in the SAST tab's left menu.
+
 INFRA-AV is a split frontend/backend antivirus web interface powered by ClamAV:
 
 - `frontend/`: React + Vite UI for login, scan configuration, command preview, health, queue state, and scan result polling.
@@ -242,7 +244,7 @@ server {
     ssl_certificate_key /etc/infra-av/tls/infra-av.key;
     error_page 497 =307 https://$host:$server_port$request_uri;
 
-    root /path/to/INFRA-AV/frontend/dist;
+    root /path/to/Antivirus/frontend/dist;
     index index.html;
 
     location /api {
@@ -313,12 +315,17 @@ Activation is unnecessary. Always invoke `$HOME/.venv/bin/python` directly and r
 
 ## UUUUI unified interface
 
-INFRA-AV is also the **Antivirus** tab of the VANTAGE UUUUI interface. The same
+INFRA-AV is also the **Antivirus** module of the VANTAGE UUUUI interface. The same
 Rust backend serves both modes:
 
 - **Standalone:** its own HTTPS origin + login (unchanged).
-- **Unified:** the UUUUI shell mounts a native Antivirus tab that calls the
-  backend through the gateway at `/api/av/` (loopback `127.0.0.1:8090`).
+- **Unified:** the UUUUI shell mounts a native Antivirus page (`/av`) that calls
+  the backend through the gateway at `/api/av/` (loopback `127.0.0.1:8090`).
+  Since 2026-11-17 the page sits in UUUUI's **SAST** tab, beside VANTAGE SAST,
+  with a **SAST · Antivirus** switch, when SAST is installed too. On a host
+  without SAST it is the **Antivirus** tab itself. INFRA-AV remains a separate
+  module, with its own installer, activation switch and user grant; only the
+  UUUUI shell groups the two (`UUUUI/shell/src/modules.ts` `sharedTabs`).
 
 **Single sign-on.** The backend accepts the UUUUI broker hand-off token: the tab
 fetches `GET /api/session/token` and posts `{"action":"auth.sso","payload":{"token":…}}`

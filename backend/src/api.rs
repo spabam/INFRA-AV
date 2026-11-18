@@ -37,7 +37,16 @@ pub async fn run_server(config: AppConfig) -> Result<()> {
         App::new()
             .app_data(web::Data::new(state.clone()))
             .wrap(cors)
+            // Legacy action API ({action,payload}); accepted with and without a
+            // trailing slash so the UUUUI gateway (/api/av/ -> /api/) and the
+            // standalone/embedded paths (-> /api) both reach it.
             .route("/api", web::post().to(api_handler))
+            .route("/api/", web::post().to(api_handler))
+            // UUUUI API contract v1 surface (GET; liveness/schema need no auth —
+            // the gateway enforces the module grant). Envelope {ok,data}.
+            .route("/api/health", web::get().to(health_route))
+            .route("/api/capabilities", web::get().to(capabilities_route))
+            .route("/api/openapi.json", web::get().to(openapi_route))
     })
     .bind(&bind_address)
     .with_context(|| format!("failed to bind {bind_address}"))?
@@ -55,6 +64,43 @@ async fn api_handler(
         Ok(response) => response,
         Err(error) => map_error(error),
     }
+}
+
+// --- UUUUI API contract v1 surface -----------------------------------------
+const CONTRACT_VERSION: &str = "1";
+const OPENAPI_JSON: &str = include_str!("openapi.json");
+
+/// GET /api/health — standard envelope (contract §5). No auth (liveness).
+async fn health_route() -> HttpResponse {
+    HttpResponse::Ok().json(ApiResponse::success(json!({
+        "status": "ok",
+        "version": crate::version::VERSION,
+        "contract": CONTRACT_VERSION,
+    })))
+}
+
+/// GET /api/capabilities — standard envelope (contract §5).
+async fn capabilities_route() -> HttpResponse {
+    HttpResponse::Ok().json(ApiResponse::success(json!({
+        "available": true,
+        "version": crate::version::VERSION,
+        "contract": CONTRACT_VERSION,
+        // The scan API is still the {action,payload} dispatch (normalized by the
+        // shared client); full REST conversion is the remaining Tier-A step.
+        "api": "action-dispatch",
+        "features": {
+            "scan": true,
+            "signatures": true,
+            "history": true,
+        },
+    })))
+}
+
+/// GET /api/openapi.json — the raw OpenAPI 3.1 document (not enveloped).
+async fn openapi_route() -> HttpResponse {
+    HttpResponse::Ok()
+        .content_type("application/json; charset=utf-8")
+        .body(OPENAPI_JSON)
 }
 
 async fn dispatch(
@@ -451,21 +497,26 @@ fn ok<T: Serialize>(data: T) -> HttpResponse {
 }
 
 fn bad_request(message: impl Into<String>) -> HttpResponse {
-    HttpResponse::BadRequest().json(ApiResponse::<serde_json::Value>::failure(message))
+    HttpResponse::BadRequest()
+        .json(ApiResponse::<serde_json::Value>::failure_with_code("invalid", message))
 }
 
 fn unauthorized(message: impl Into<String>) -> HttpResponse {
-    HttpResponse::Unauthorized().json(ApiResponse::<serde_json::Value>::failure(message))
+    HttpResponse::Unauthorized()
+        .json(ApiResponse::<serde_json::Value>::failure_with_code("unauthenticated", message))
 }
 
 fn forbidden(message: impl Into<String>) -> HttpResponse {
-    HttpResponse::Forbidden().json(ApiResponse::<serde_json::Value>::failure(message))
+    HttpResponse::Forbidden()
+        .json(ApiResponse::<serde_json::Value>::failure_with_code("forbidden", message))
 }
 
 fn server_error(message: impl Into<String>) -> HttpResponse {
-    HttpResponse::InternalServerError().json(ApiResponse::<serde_json::Value>::failure(message))
+    HttpResponse::InternalServerError()
+        .json(ApiResponse::<serde_json::Value>::failure_with_code("internal", message))
 }
 
+// Map an internal error to the canonical envelope + HTTP status (contract §3).
 fn map_error(error: anyhow::Error) -> HttpResponse {
     let message = error.to_string();
     let normalized = message.to_ascii_lowercase();
@@ -476,6 +527,59 @@ fn map_error(error: anyhow::Error) -> HttpResponse {
     {
         return unauthorized(message);
     }
+    if normalized.contains("not found") {
+        return HttpResponse::NotFound()
+            .json(ApiResponse::<serde_json::Value>::failure_with_code("not_found", message));
+    }
+    if normalized.contains("permission") {
+        return forbidden(message);
+    }
 
     bad_request(message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::App;
+    use actix_web::test as actix_test;
+
+    #[actix_web::test]
+    async fn health_is_a_standard_envelope() {
+        let app = actix_test::init_service(App::new().route("/api/health", web::get().to(health_route))).await;
+        let req = actix_test::TestRequest::get().uri("/api/health").to_request();
+        let body: serde_json::Value = actix_test::call_and_read_body_json(&app, req).await;
+        assert_eq!(body["ok"], serde_json::json!(true));
+        assert_eq!(body["data"]["status"], "ok");
+        assert_eq!(body["data"]["contract"], CONTRACT_VERSION);
+    }
+
+    #[actix_web::test]
+    async fn capabilities_declares_the_contract() {
+        let app = actix_test::init_service(App::new().route("/api/capabilities", web::get().to(capabilities_route))).await;
+        let req = actix_test::TestRequest::get().uri("/api/capabilities").to_request();
+        let body: serde_json::Value = actix_test::call_and_read_body_json(&app, req).await;
+        assert_eq!(body["ok"], serde_json::json!(true));
+        assert_eq!(body["data"]["available"], serde_json::json!(true));
+        assert_eq!(body["data"]["contract"], CONTRACT_VERSION);
+    }
+
+    #[actix_web::test]
+    async fn openapi_is_served_and_parses() {
+        let app = actix_test::init_service(App::new().route("/api/openapi.json", web::get().to(openapi_route))).await;
+        let req = actix_test::TestRequest::get().uri("/api/openapi.json").to_request();
+        let body = actix_test::call_and_read_body(&app, req).await;
+        let doc: serde_json::Value = serde_json::from_slice(&body).expect("openapi.json must be valid JSON");
+        assert_eq!(doc["openapi"], "3.1.0");
+        assert!(doc["paths"]["/health"].is_object());
+    }
+
+    #[test]
+    fn error_envelope_carries_a_canonical_code() {
+        let resp = ApiResponse::<serde_json::Value>::failure_with_code("forbidden", "nope");
+        let value = serde_json::to_value(&resp).unwrap();
+        assert_eq!(value["ok"], serde_json::json!(false));
+        assert_eq!(value["error"]["code"], "forbidden");
+        assert_eq!(value["error"]["message"], "nope");
+    }
 }

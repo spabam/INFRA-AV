@@ -12,7 +12,16 @@ pub struct ApiEnvelope {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiError {
+    // Canonical UUUUI API-contract code (UUUUI/shared/api-contract/CONTRACT.md §3):
+    // unauthenticated | forbidden | not_found | invalid | conflict | quota |
+    // unavailable | internal. Defaulted for backward-compatible deserialization.
+    #[serde(default = "default_error_code")]
+    pub code: String,
     pub message: String,
+}
+
+fn default_error_code() -> String {
+    "invalid".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,11 +48,17 @@ where
         }
     }
 
+    #[allow(dead_code)] // kept as the canonical-"invalid" convenience alongside failure_with_code
     pub fn failure(message: impl Into<String>) -> Self {
+        Self::failure_with_code("invalid", message)
+    }
+
+    pub fn failure_with_code(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             ok: false,
             data: None,
             error: Some(ApiError {
+                code: code.into(),
                 message: message.into(),
             }),
         }
