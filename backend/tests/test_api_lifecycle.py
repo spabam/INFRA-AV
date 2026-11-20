@@ -13,6 +13,7 @@ import signal
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 import urllib.error
@@ -134,6 +135,31 @@ class ApiLifecycleTests(unittest.TestCase):
         self.assertIn("scan stopped", report)
         self.assertIn("unknown", report)
         self.assertNotIn("no infected files were reported", report)
+
+    def test_slow_health_probe_does_not_block_service_shutdown(self):
+        started = self.root / "probe-started"
+        self.cli.write_text(
+            "#!/usr/bin/python3\nimport time\nfrom pathlib import Path\n"
+            f"Path({str(started)!r}).touch()\ntime.sleep(12)\nprint('fixture scanner')\n")
+        errors = []
+
+        def slow_request():
+            try:
+                self.api("health.check")
+            except (OSError, ConnectionError) as error:
+                errors.append(error)  # shutdown may close the in-flight request
+
+        client = threading.Thread(target=slow_request, daemon=True)
+        client.start()
+        for _ in range(100):
+            if started.exists():
+                break
+            time.sleep(.02)
+        self.assertTrue(started.exists(), "slow probe did not begin")
+        self.server.terminate()
+        self.assertEqual(self.server.wait(timeout=8), 0)
+        client.join(timeout=2)
+        self.assertFalse(client.is_alive())
 
     def test_pending_cancel_never_executes_and_outside_roots_are_rejected(self):
         request_id = self.submit()

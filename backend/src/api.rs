@@ -48,6 +48,9 @@ pub async fn run_server(config: AppConfig) -> Result<()> {
             .route("/api/capabilities", web::get().to(capabilities_route))
             .route("/api/openapi.json", web::get().to(openapi_route))
     })
+    // Allow in-flight requests to finish briefly, then release HTTP workers
+    // before systemd's service stop deadline.
+    .shutdown_timeout(5)
     .bind(&bind_address)
     .with_context(|| format!("failed to bind {bind_address}"))?
     .run()
@@ -160,11 +163,24 @@ async fn dispatch(
             }))
         }
         "health.check" => {
-            let counts = queue::queue_counts(&state.config)?;
-            let (clamscan_ok, clamscan_output) =
-                probe_command(&state.config.clamscan_bin, "--version");
-            let (freshclam_ok, freshclam_output) =
-                probe_command(&state.config.freshclam_bin, "--version");
+            let config = state.config.clone();
+            let (counts, clamscan_ok, clamscan_output, freshclam_ok, freshclam_output) =
+                web::block(move || -> Result<_> {
+                    let counts = queue::queue_counts(&config)?;
+                    let (clamscan_ok, clamscan_output) =
+                        probe_command(&config.clamscan_bin, "--version");
+                    let (freshclam_ok, freshclam_output) =
+                        probe_command(&config.freshclam_bin, "--version");
+                    Ok((
+                        counts,
+                        clamscan_ok,
+                        clamscan_output,
+                        freshclam_ok,
+                        freshclam_output,
+                    ))
+                })
+                .await
+                .context("health probe task failed")??;
             Ok(ok(HealthResponse {
                 product_version: crate::version::VERSION.to_string(),
                 backend_version: crate::version::BACKEND_VERSION.to_string(),
@@ -344,7 +360,11 @@ async fn dispatch(
             if claims.role != "admin" {
                 return Ok(forbidden("admin role required"));
             }
-            let processed = worker::run(state.config.clone(), true, std::time::Duration::ZERO);
+            let config = state.config.clone();
+            let processed =
+                web::block(move || worker::run(config, true, std::time::Duration::ZERO))
+                    .await
+                    .context("scan worker task failed")?;
             match processed {
                 Ok(()) => Ok(ok(json!({ "processed": true }))),
                 Err(error) => Ok(server_error(error.to_string())),
@@ -355,7 +375,10 @@ async fn dispatch(
             if claims.role != "admin" {
                 return Ok(forbidden("admin role required"));
             }
-            let (exit_code, lines) = run_signature_update(&state.config)?;
+            let config = state.config.clone();
+            let (exit_code, lines) = web::block(move || run_signature_update(&config))
+                .await
+                .context("signature update task failed")??;
 
             Ok(ok(SignatureUpdateResponse {
                 exit_code,
@@ -497,23 +520,29 @@ fn ok<T: Serialize>(data: T) -> HttpResponse {
 }
 
 fn bad_request(message: impl Into<String>) -> HttpResponse {
-    HttpResponse::BadRequest()
-        .json(ApiResponse::<serde_json::Value>::failure_with_code("invalid", message))
+    HttpResponse::BadRequest().json(ApiResponse::<serde_json::Value>::failure_with_code(
+        "invalid", message,
+    ))
 }
 
 fn unauthorized(message: impl Into<String>) -> HttpResponse {
-    HttpResponse::Unauthorized()
-        .json(ApiResponse::<serde_json::Value>::failure_with_code("unauthenticated", message))
+    HttpResponse::Unauthorized().json(ApiResponse::<serde_json::Value>::failure_with_code(
+        "unauthenticated",
+        message,
+    ))
 }
 
 fn forbidden(message: impl Into<String>) -> HttpResponse {
-    HttpResponse::Forbidden()
-        .json(ApiResponse::<serde_json::Value>::failure_with_code("forbidden", message))
+    HttpResponse::Forbidden().json(ApiResponse::<serde_json::Value>::failure_with_code(
+        "forbidden",
+        message,
+    ))
 }
 
 fn server_error(message: impl Into<String>) -> HttpResponse {
-    HttpResponse::InternalServerError()
-        .json(ApiResponse::<serde_json::Value>::failure_with_code("internal", message))
+    HttpResponse::InternalServerError().json(ApiResponse::<serde_json::Value>::failure_with_code(
+        "internal", message,
+    ))
 }
 
 // Map an internal error to the canonical envelope + HTTP status (contract §3).
@@ -528,8 +557,10 @@ fn map_error(error: anyhow::Error) -> HttpResponse {
         return unauthorized(message);
     }
     if normalized.contains("not found") {
-        return HttpResponse::NotFound()
-            .json(ApiResponse::<serde_json::Value>::failure_with_code("not_found", message));
+        return HttpResponse::NotFound().json(ApiResponse::<serde_json::Value>::failure_with_code(
+            "not_found",
+            message,
+        ));
     }
     if normalized.contains("permission") {
         return forbidden(message);
@@ -546,8 +577,12 @@ mod tests {
 
     #[actix_web::test]
     async fn health_is_a_standard_envelope() {
-        let app = actix_test::init_service(App::new().route("/api/health", web::get().to(health_route))).await;
-        let req = actix_test::TestRequest::get().uri("/api/health").to_request();
+        let app =
+            actix_test::init_service(App::new().route("/api/health", web::get().to(health_route)))
+                .await;
+        let req = actix_test::TestRequest::get()
+            .uri("/api/health")
+            .to_request();
         let body: serde_json::Value = actix_test::call_and_read_body_json(&app, req).await;
         assert_eq!(body["ok"], serde_json::json!(true));
         assert_eq!(body["data"]["status"], "ok");
@@ -556,8 +591,13 @@ mod tests {
 
     #[actix_web::test]
     async fn capabilities_declares_the_contract() {
-        let app = actix_test::init_service(App::new().route("/api/capabilities", web::get().to(capabilities_route))).await;
-        let req = actix_test::TestRequest::get().uri("/api/capabilities").to_request();
+        let app = actix_test::init_service(
+            App::new().route("/api/capabilities", web::get().to(capabilities_route)),
+        )
+        .await;
+        let req = actix_test::TestRequest::get()
+            .uri("/api/capabilities")
+            .to_request();
         let body: serde_json::Value = actix_test::call_and_read_body_json(&app, req).await;
         assert_eq!(body["ok"], serde_json::json!(true));
         assert_eq!(body["data"]["available"], serde_json::json!(true));
@@ -566,10 +606,16 @@ mod tests {
 
     #[actix_web::test]
     async fn openapi_is_served_and_parses() {
-        let app = actix_test::init_service(App::new().route("/api/openapi.json", web::get().to(openapi_route))).await;
-        let req = actix_test::TestRequest::get().uri("/api/openapi.json").to_request();
+        let app = actix_test::init_service(
+            App::new().route("/api/openapi.json", web::get().to(openapi_route)),
+        )
+        .await;
+        let req = actix_test::TestRequest::get()
+            .uri("/api/openapi.json")
+            .to_request();
         let body = actix_test::call_and_read_body(&app, req).await;
-        let doc: serde_json::Value = serde_json::from_slice(&body).expect("openapi.json must be valid JSON");
+        let doc: serde_json::Value =
+            serde_json::from_slice(&body).expect("openapi.json must be valid JSON");
         assert_eq!(doc["openapi"], "3.1.0");
         assert!(doc["paths"]["/health"].is_object());
     }

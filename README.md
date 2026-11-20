@@ -386,3 +386,11 @@ Migration checklist:
       320/768/1440 widths, local font load, no page overflow and persisted settings.
 - [ ] Deployment acceptance: report preview and full scan controls on an authorized
       target. Visual tests do not start real scans.
+
+Antivirus HTTP workers offload health probes, signature updates and explicit
+worker requests to blocking tasks. Slow subprocesses therefore cannot block the
+HTTP shutdown loop during upgrades. The API allows five seconds for requests
+to drain, keeping normal service restarts within systemd's stop deadline.
+The backend lifecycle suite includes a slow-probe shutdown regression using
+only disposable paths and a local fixture command. The normal installers build
+and deploy this behavior for both the engine service and UUUUI integration.
