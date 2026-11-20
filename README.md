@@ -1,6 +1,11 @@
 # INFRA-AV
 
-> Folder: `VANTAGE/Antivirus/` (formerly `INFRA-AV/`); the product keeps the name INFRA-AV. In UUUUI it appears as **Antivirus** in the SAST tab's left menu.
+The product lives in `Vulnerabilities/Antivirus/` and is also called INFRA-AV.
+In UUUUI, open **Antivirus** under **SAST** when both modules are installed, or
+open the **Antivirus** tab directly. Choose **Documentation** in its header to
+browse and search the [Antivirus Operator Manual](docs/OPERATOR-MANUAL.md).
+Use **Platform documentation** in the UUUUI footer for shared permissions
+and assistance. [UUUUI Operator Manual](../../System/UUUUI/docs/OPERATOR-MANUAL.md)
 
 INFRA-AV is a split frontend/backend antivirus web interface powered by ClamAV:
 
