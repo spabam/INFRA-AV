@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::clamav::{CommandSpec, build_command};
 use crate::config::AppConfig;
 use crate::models::{
-    JobStatus, QueueCounts, QueuedJob, ScanActionRequest, ScanListItem, ScanSubmitResponse,
+    JobStatus, QueueCounts, QueuedJob, ScanActionRequest, ScanListItem, ScanSubmitResponse, ScanType,
 };
 
 pub fn submit_job(
@@ -174,6 +174,45 @@ pub fn list_jobs(
     items.sort_by_key(|item| std::cmp::Reverse(item.submitted_at));
     items.truncate(limit);
     Ok(items)
+}
+
+/// Find the latest finished directory report for the selected project, following
+/// the same ownership rule as scan.list and scan.report.
+pub fn latest_folder_report(
+    config: &AppConfig,
+    target: &Path,
+    owner: Option<&str>,
+) -> Result<Option<QueuedJob>> {
+    let mut latest = None;
+    for directory in [&config.done_dir, &config.failed_dir] {
+        for entry in fs::read_dir(directory)
+            .with_context(|| format!("failed to read {}", directory.display()))?
+        {
+            let path = entry?.path();
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            let Ok(job) = read_job(&path) else {
+                continue;
+            };
+            if job.scan_type != ScanType::Directory
+                || !matches!(job.status, JobStatus::Done | JobStatus::Failed | JobStatus::Cancelled)
+                || owner.is_some_and(|owner| job.submitted_by != owner)
+                || Path::new(&job.target) != target
+            {
+                continue;
+            }
+            let Some(finished_at) = job.result.as_ref().and_then(|result| {
+                result.started_at.and(result.finished_at)
+            }) else {
+                continue;
+            };
+            if latest.as_ref().is_none_or(|(at, _)| finished_at > *at) {
+                latest = Some((finished_at, job));
+            }
+        }
+    }
+    Ok(latest.map(|(_, job)| job))
 }
 
 pub fn write_processing_job(path: &Path, job: &QueuedJob) -> Result<()> {

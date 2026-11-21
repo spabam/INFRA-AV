@@ -4,9 +4,9 @@ Antivirus is the INFRA-AV interface for on-demand ClamAV scans of authorized fil
 
 ## 1. Open Antivirus and find documentation
 
-Sign in to UUUUI. If UUUUI groups SAST and Antivirus, open **SAST** and select **Antivirus** in the module navigation. On hosts with Antivirus alone, select the **Antivirus** tab. The direct route is `/av`. The UUUUI session signs you in to Antivirus without a second login. Select **Documentation** in the Antivirus header to browse and search this manual.
+Sign in to UUUUI and open **Security → Local scan**. Choose **Antivirus** in the left menu when SAST is also available to your account. When Antivirus is the only available local scan module, **Local scan** opens it directly. The direct route is `/av`. The UUUUI session signs you in to Antivirus without a second login. Select **Documentation** in the Antivirus header to browse and search this manual.
 
-Select **Platform documentation** in the UUUUI footer for general help, or open the footer **Chatbot** and ask a question such as “How do I reopen an Antivirus scan?” When platform documentation is available, the assistant can use relevant excerpts from the official manual. Open the scan in Antivirus to read its live status, target path, and report under your own grant. [UUUUI Operator Manual](../../../System/UUUUI/docs/OPERATOR-MANUAL.md)
+Select **Help** in the UUUUI footer for general help, or open the footer **Chatbot** and ask a question such as “How do I reopen an Antivirus scan?” When platform documentation is available, the assistant can use relevant excerpts from the official manual. Open the scan in Antivirus to read its live status, target path, and report under your own grant. [UUUUI Operator Manual](../../../System/UUUUI/docs/OPERATOR-MANUAL.md)
 
 ## 2. Check access and choose a scan target
 
@@ -19,6 +19,8 @@ UUUUI checks whether Antivirus is installed, enabled, and granted to the signed-
 1. In **New scan**, set **Type** to **Directory**, **File**, or **Device**.
 2. In **Target**, enter an absolute server path or choose **Browse…**. The picker navigates the server's permitted locations. For a directory choose **Select this folder**. For a file or device choose its name or **select**.
 3. Review the path and selected type before starting. File and directory scans must stay under the host's configured scan roots. Common defaults are `/home`, `/srv`, and `/tmp`. A device appears only when it is available and the host permits device scans. Use an authorized target that the scanner can actually read.
+
+In **Browse…**, turn on **Show hidden folders** for a directory target or **Show hidden files and folders** for a file target. Hidden entries have names that start with a dot.
 
 ## 3. Start and monitor a scan
 
@@ -52,7 +54,9 @@ If the queue starts a scan during cancellation, refresh the monitor and retry **
 
 **Done** is the job state. The summary displays **Clean** when the scan completed and reported zero infections. A positive infection count is shown even when the scan is incomplete. **Result unknown** means the completed job lacked a conclusive clean summary. **Scan incomplete** covers unfinished, failed, or cancelled work as appropriate. Review scan limits, errors, unreadable files, and actual coverage before relying on a result.
 
-When **View report** appears, choose it to open the isolated HTML report inside the monitor. Review the target, coverage counts, duration, detected signatures, and scan output. Share report data only with recipients authorized to see the server paths and findings. A documentation assistant can explain what a status means using the manual. The source report remains in Antivirus.
+When **View report** appears, choose it to review the target, coverage counts, duration, and detected signatures in the monitor. The original HTML contains the scanner output. Share report data with recipients authorized to see the server paths and findings.
+
+SAST’s **AI check** can include the latest finished Antivirus directory report for the same project folder. With Antivirus access, select **Latest Antivirus report** when starting a check. The review uses the scan state, counts, and a bounded list of project-relative detections. The full scanner output is available in Antivirus.
 
 ### Find a previous scan
 
@@ -74,11 +78,13 @@ Include `av` when selecting modules in the unified UUUUI installer. The Antiviru
 
 The native UI uses the authenticated `POST /api/av/` action API. Read operations include `health.check`, `scan.browse`, `scan.list`, `scan.status`, and `scan.report`. Submit and control actions are `scan.submit`, `scan.pause`, `scan.resume`, and `scan.stop`. The caller's role and scan ownership determine access. `GET /api/av/openapi.json` supplies the published contract. `GET /api/av/health` and `GET /api/av/capabilities` show version and capabilities. Use the same platform session and gateway as the UI.
 
+The gateway provides AI Check with a short-lived assertion for the internal `scan.folder-evidence` action only when the user has the Antivirus grant. Antivirus applies the same ownership check as **Scan history**.
+
 ### Troubleshoot by symptom
 
 | What you see | What to check |
 | --- | --- |
-| Antivirus is missing | Ask a platform administrator to check installation, module activation, and your Antivirus grant. Look under the **SAST** tab when both products are installed. |
+| Antivirus is missing | Look under **Security → Local scan**. Ask a platform administrator to check installation, module activation, and your Antivirus grant. |
 | **Couldn't start an Antivirus session** | Choose **Retry**. Check the current UUUUI sign-in, module grant, and the broker-to-Antivirus configuration if it persists. |
 | **Engine unreachable** | Check backend health and gateway reachability. On the host, `systemctl status infra-av-backend.service` shows service status. |
 | A target is missing or rejected | Verify the selected type, allowed scan roots, device policy, and scanner access on the server. |

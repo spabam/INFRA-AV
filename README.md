@@ -7,6 +7,10 @@ browse and search the [Antivirus Operator Manual](docs/OPERATOR-MANUAL.md).
 Use **Platform documentation** in the UUUUI footer for shared permissions
 and assistance. [UUUUI Operator Manual](../../System/UUUUI/docs/OPERATOR-MANUAL.md)
 
+In SAST **AI Check**, a review can include the latest accessible directory
+report for the selected project folder. Antivirus supplies scan counts and
+project-relative detections under the existing report permissions.
+
 INFRA-AV is a split frontend/backend antivirus web interface powered by ClamAV:
 
 - `frontend/`: React + Vite UI for login, scan configuration, command preview, health, queue state, and scan result polling.

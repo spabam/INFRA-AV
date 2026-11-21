@@ -133,6 +133,10 @@ pub fn directory_enabled() -> bool {
 /// A fresh assertion is supplied by nginx after checking current platform
 /// membership and AV access. A cached AV login token cannot retain old rights.
 pub fn directory_claims(config: &AppConfig, token: &str) -> Result<Claims> {
+    directory_claims_for(config, token, "av")
+}
+
+pub fn directory_claims_for(config: &AppConfig, token: &str, audience: &str) -> Result<Claims> {
     // Accept the current broker secret and, during a rotation overlap window, the
     // previous one (UUUUI/shared/uuuui-identity/CONTRACT.md).
     let secrets: Vec<&str> = config
@@ -141,16 +145,16 @@ pub fn directory_claims(config: &AppConfig, token: &str) -> Result<Claims> {
         .into_iter()
         .chain(config.broker_secret_previous.as_deref())
         .collect();
-    verify_directory_identity_with_keys(&secrets, token)
+    verify_directory_identity_with_keys(&secrets, token, audience)
 }
 
-fn verify_directory_identity_with_keys(secrets: &[&str], token: &str) -> Result<Claims> {
+fn verify_directory_identity_with_keys(secrets: &[&str], token: &str, audience: &str) -> Result<Claims> {
     if secrets.is_empty() {
         bail!("invalid token: directory verification is not configured");
     }
     let mut last_error = None;
     for secret in secrets {
-        match verify_directory_identity(secret, token) {
+        match verify_directory_identity(secret, token, audience) {
             Ok(claims) => return Ok(claims),
             Err(error) => last_error = Some(error),
         }
@@ -159,13 +163,13 @@ fn verify_directory_identity_with_keys(secrets: &[&str], token: &str) -> Result<
 }
 
 // Verification rules per the UUUUI identity-assertion contract
-// (UUUUI/shared/uuuui-identity/CONTRACT.md): HS256 only, aud=av, not expired,
+// (UUUUI/shared/uuuui-identity/CONTRACT.md): HS256, exact audience, not expired,
 // 0 < exp-iat <= 120 s, iat not in the future. MAX_TTL bounds the damage window
 // if a key leaks, independent of whatever exp a forger chooses.
 const DIRECTORY_MAX_TTL_SECONDS: usize = 120;
 const DIRECTORY_SKEW_SECONDS: usize = 30;
 
-fn verify_directory_identity(secret: &str, token: &str) -> Result<Claims> {
+fn verify_directory_identity(secret: &str, token: &str, audience: &str) -> Result<Claims> {
     #[derive(Deserialize)]
     struct Identity {
         sub: String,
@@ -179,7 +183,7 @@ fn verify_directory_identity(secret: &str, token: &str) -> Result<Claims> {
         iat: usize,
     }
     let mut validation = Validation::new(Algorithm::HS256);
-    validation.set_audience(&["av"]);
+    validation.set_audience(&[audience]);
     validation.leeway = DIRECTORY_SKEW_SECONDS as u64;
     let identity = decode::<Identity>(token, &DecodingKey::from_secret(secret.as_bytes()), &validation)
         .context("invalid token: UUUUI directory assertion")?.claims;
@@ -291,18 +295,18 @@ mod directory_tests {
         let now = Utc::now().timestamp();
         let mut claims = json!({"sub":"person@example.test","native_subject":"legacy-av-name","aud":"av","roles":["member"],"moduleRole":"member","iat":now,"exp":now+60});
         let token = |claims: &serde_json::Value| encode(&Header::default(), claims, &EncodingKey::from_secret(b"isolated-directory-secret")).unwrap();
-        let member = verify_directory_identity(secret, &token(&claims)).unwrap();
+        let member = verify_directory_identity(secret, &token(&claims), "av").unwrap();
         assert_eq!((member.sub.as_str(), member.role.as_str()), ("legacy-av-name", "member"));
         claims["moduleRole"] = json!("admin");
-        assert_eq!(verify_directory_identity(secret, &token(&claims)).unwrap().role, "admin");
+        assert_eq!(verify_directory_identity(secret, &token(&claims), "av").unwrap().role, "admin");
         claims["moduleRole"] = json!("member");
         claims["roles"] = json!(["superadmin"]);
-        assert_eq!(verify_directory_identity(secret, &token(&claims)).unwrap().role, "admin");
+        assert_eq!(verify_directory_identity(secret, &token(&claims), "av").unwrap().role, "admin");
         claims["aud"] = json!("ticket");
-        assert!(verify_directory_identity(secret, &token(&claims)).is_err());
+        assert!(verify_directory_identity(secret, &token(&claims), "av").is_err());
         claims["aud"] = json!("av");
         claims["exp"] = json!(now - 120);
-        assert!(verify_directory_identity(secret, &token(&claims)).is_err());
+        assert!(verify_directory_identity(secret, &token(&claims), "av").is_err());
     }
 
     // Mirrors UUUUI/shared/uuuui-identity/vectors.json for the av verifier.
@@ -320,28 +324,33 @@ mod directory_tests {
                    "kind":"app","roles":["member"],"moduleRole":"member","aud":"av","iat":iat,"exp":iat+ttl})
         };
         // valid
-        assert!(verify_directory_identity(current, &sign(current, &base(now, 60))).is_ok());
+        assert!(verify_directory_identity(current, &sign(current, &base(now, 60)), "av").is_ok());
+        let mut evidence = base(now, 60);
+        evidence["aud"] = json!("av-evidence");
+        assert!(verify_directory_identity(current, &sign(current, &evidence), "av-evidence").is_ok());
+        assert!(verify_directory_identity(current, &sign(current, &evidence), "av").is_err());
+        assert!(verify_directory_identity(current, &sign(current, &base(now, 60)), "av-evidence").is_err());
         // wrong aud
         let mut wrong_aud = base(now, 60);
         wrong_aud["aud"] = json!("ticket");
-        assert!(verify_directory_identity(current, &sign(current, &wrong_aud)).is_err());
+        assert!(verify_directory_identity(current, &sign(current, &wrong_aud), "av").is_err());
         // expired
-        assert!(verify_directory_identity(current, &sign(current, &base(now - 120, 60))).is_err());
+        assert!(verify_directory_identity(current, &sign(current, &base(now - 120, 60)), "av").is_err());
         // iat in the future (beyond skew)
-        assert!(verify_directory_identity(current, &sign(current, &base(now + 120, 60))).is_err());
+        assert!(verify_directory_identity(current, &sign(current, &base(now + 120, 60)), "av").is_err());
         // lifetime over the 120 s cap
-        assert!(verify_directory_identity(current, &sign(current, &base(now, 600))).is_err());
+        assert!(verify_directory_identity(current, &sign(current, &base(now, 600)), "av").is_err());
         // missing sub
         let mut no_sub = base(now, 60);
         no_sub.as_object_mut().unwrap().remove("sub");
-        assert!(verify_directory_identity(current, &sign(current, &no_sub)).is_err());
+        assert!(verify_directory_identity(current, &sign(current, &no_sub), "av").is_err());
         // bad signature (signed with a key the verifier does not hold)
-        assert!(verify_directory_identity(current, &sign(unknown, &base(now, 60))).is_err());
+        assert!(verify_directory_identity(current, &sign(unknown, &base(now, 60)), "av").is_err());
         // key set: current + previous accepted (rotation overlap), unknown rejected
         let keys = [current, previous];
-        assert!(verify_directory_identity_with_keys(&keys, &sign(current, &base(now, 60))).is_ok());
-        assert!(verify_directory_identity_with_keys(&keys, &sign(previous, &base(now, 60))).is_ok());
-        assert!(verify_directory_identity_with_keys(&keys, &sign(unknown, &base(now, 60))).is_err());
+        assert!(verify_directory_identity_with_keys(&keys, &sign(current, &base(now, 60)), "av").is_ok());
+        assert!(verify_directory_identity_with_keys(&keys, &sign(previous, &base(now, 60)), "av").is_ok());
+        assert!(verify_directory_identity_with_keys(&keys, &sign(unknown, &base(now, 60)), "av").is_err());
     }
 
     #[test]

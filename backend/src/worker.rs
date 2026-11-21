@@ -312,6 +312,53 @@ mod tests {
     }
 
     #[test]
+    fn folder_report_evidence_respects_ownership_and_matches_only_the_project() {
+        let (root, config, fixture_file) = fixture("folder-evidence");
+        let target = fixture_file.parent().unwrap();
+        let submitted_at = chrono::Utc::now();
+        let finish = |owner: &str, seconds: i64| {
+            let submitted = crate::queue::submit_job(
+                &config,
+                owner,
+                ScanActionRequest {
+                    timestamp: submitted_at.to_rfc3339(),
+                    user: owner.into(),
+                    action_type: "av".into(),
+                    target: target.display().to_string(),
+                    scan_type: ScanType::Directory,
+                    options: ClamAvOptions::default(),
+                },
+            ).unwrap();
+            let (mut job, processing) = crate::queue::take_next_pending(&config).unwrap().unwrap();
+            assert_eq!(job.request_id, submitted.request_id);
+            job.status = JobStatus::Done;
+            job.result = Some(crate::models::JobResult {
+                started_at: Some(submitted_at),
+                finished_at: Some(submitted_at + chrono::Duration::seconds(seconds)),
+                exit_code: 1,
+                output: vec![
+                    format!("{}: Example.Signature FOUND", fixture_file.display()),
+                    "/other/project.txt: Outside.Signature FOUND".into(),
+                ],
+                summary: None,
+                error_message: None,
+            });
+            crate::queue::finalize_job(&config, &processing, &job).unwrap();
+            submitted.request_id
+        };
+        let own_id = finish("owner", 1);
+        let newest_id = finish("other", 2);
+        let owned = crate::queue::latest_folder_report(&config, target, Some("owner")).unwrap().unwrap();
+        assert_eq!(owned.request_id, own_id);
+        let evidence = crate::report::folder_evidence(owned, target).unwrap();
+        assert_eq!(evidence["detections"], serde_json::json!([{"path": "fixture.txt", "signature": "Example.Signature"}]));
+        assert_eq!(crate::queue::latest_folder_report(&config, target, None).unwrap().unwrap().request_id, newest_id);
+        assert!(crate::queue::latest_folder_report(&config, target, Some("stranger")).unwrap().is_none());
+        assert!(crate::queue::latest_folder_report(&config, &target.join("another-project"), None).unwrap().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn unavailable_executable_is_a_terminal_failure_with_a_report() {
         let (root, mut config, target) = fixture("missing-executable");
         config.clamscan_bin = root.join("missing-clamscan").display().to_string();

@@ -3,6 +3,7 @@ use actix_web::{App, HttpRequest, HttpResponse, HttpServer, web};
 use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 use serde_json::json;
+use std::path::{Component, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
@@ -261,6 +262,29 @@ async fn dispatch(
             let owner = (claims.role != "admin").then_some(claims.sub.as_str());
             let items = queue::list_jobs(&state.config, payload.limit, owner)?;
             Ok(ok(ScanListResponse { items }))
+        }
+        "scan.folder-evidence" => {
+            let assertion = request.headers()
+                .get("X-UUUUI-Identity")
+                .ok_or_else(|| anyhow!("invalid token: project evidence assertion is required"))?
+                .to_str()
+                .context("invalid token: project evidence assertion")?;
+            let claims = auth::directory_claims_for(&state.config, assertion, "av-evidence")?;
+            let target = envelope.payload.get("target").and_then(|value| value.as_str())
+                .filter(|target| target.len() <= 4096)
+                .map(PathBuf::from)
+                .filter(|path| {
+                    path.is_absolute() && path.parent().is_some()
+                        && !path.components().any(|part| part == Component::ParentDir)
+                })
+                .ok_or_else(|| anyhow!("a project folder path is required"))?;
+            let config = state.config.clone();
+            let evidence = web::block(move || {
+                let owner = (claims.role != "admin").then_some(claims.sub.as_str());
+                let job = queue::latest_folder_report(&config, &target, owner)?;
+                Ok::<_, anyhow::Error>(job.and_then(|job| report::folder_evidence(job, &target)))
+            }).await.context("project report lookup failed")??;
+            Ok(ok(json!({"report": evidence})))
         }
         "scan.pause" => {
             let claims = claims_from_request(&request, &state.config)?;

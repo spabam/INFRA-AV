@@ -1,11 +1,54 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
+use serde_json::{Value, json};
 
 use crate::config::AppConfig;
 use crate::models::{JobStatus, QueuedJob};
+
+/// Project evidence carries counts and bounded, project-relative detections.
+/// The standalone HTML report and scanner logs stay in Antivirus.
+pub fn folder_evidence(job: QueuedJob, target: &Path) -> Option<Value> {
+    let result = job.result?;
+    let detections: Vec<_> = result.output.iter()
+        .filter_map(|line| {
+            let (path, signature) = line.strip_suffix(" FOUND")?.rsplit_once(": ")?;
+            let relative = Path::new(path).strip_prefix(target).ok()?;
+            let relative_text = relative.to_str()?;
+            if relative_text.is_empty()
+                || relative_text.len() > 512
+                || relative_text.chars().any(char::is_control)
+                || relative.components().any(|part| !matches!(part, Component::Normal(_)))
+                || signature.is_empty()
+                || signature.len() > 160
+                || signature.chars().any(char::is_control)
+            {
+                return None;
+            }
+            Some(json!({"path": relative_text, "signature": signature}))
+        })
+        .take(40)
+        .collect();
+    let summary = result.summary.map(|summary| {
+        json!({
+            "filesScanned": summary.files_scanned,
+            "infectedFiles": summary.infected_files,
+            "directoriesScanned": summary.directories_scanned,
+            "clean": job.status == JobStatus::Done && summary.clean,
+        })
+    });
+    Some(json!({
+        "requestId": job.request_id,
+        "target": target,
+        "status": job.status,
+        "submittedAt": job.submitted_at,
+        "finishedAt": result.finished_at,
+        "summary": summary,
+        "detections": detections,
+    }))
+}
 
 pub fn report_filename(request_id: &str) -> String {
     format!("{request_id}.html")

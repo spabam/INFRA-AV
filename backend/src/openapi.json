@@ -128,7 +128,7 @@
     "/": {
       "post": {
         "summary": "Scan action dispatch (legacy {action,payload})",
-        "description": "Actions: auth.login, auth.sso, health.check, scan.submit, scan.browse, scan.status, scan.report, scan.list, scan.pause, scan.resume, scan.stop, scan.runWorkerOnce, signatures.update.",
+        "description": "Actions: auth.login, auth.sso, health.check, scan.submit, scan.browse, scan.status, scan.report, scan.list, scan.pause, scan.resume, scan.stop, scan.runWorkerOnce, signatures.update. The internal scan.folder-evidence action accepts a broker assertion for the av-evidence audience and returns the latest accessible finished directory report summary for its target.",
         "requestBody": {
           "required": true,
           "content": {
