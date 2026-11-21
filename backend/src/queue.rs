@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -221,6 +222,20 @@ pub fn write_processing_job(path: &Path, job: &QueuedJob) -> Result<()> {
 
 pub fn write_job(path: &Path, job: &QueuedJob) -> Result<()> {
     write_json_atomic(path, job)
+}
+
+pub fn lock(config: &AppConfig, name: &str) -> Result<File> {
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(config.processing_dir.join(name))?;
+    // The protected queue directory is shared by the API and worker. The
+    // descriptor releases the lock on scope exit, including process failure.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } < 0 {
+        return Err(std::io::Error::last_os_error()).context("failed to lock scan queue");
+    }
+    Ok(file)
 }
 
 pub fn finalize_job(

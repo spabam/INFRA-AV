@@ -29,7 +29,9 @@ pub struct AppConfig {
     pub users_file: PathBuf,
     pub clamscan_bin: String,
     pub freshclam_bin: String,
+    pub split_worker: bool,
     pub allowed_scan_roots: Vec<PathBuf>,
+    pub read_only_scan_roots: Vec<PathBuf>,
     pub allowed_write_roots: Vec<PathBuf>,
     pub allowed_database_roots: Vec<PathBuf>,
     pub allow_device_scans: bool,
@@ -37,7 +39,7 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    pub fn from_env() -> Result<Self> {
+    pub fn from_env(require_api_credentials: bool) -> Result<Self> {
         let project_root = env::var("INFRA_AV_PROJECT_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
@@ -91,14 +93,17 @@ impl AppConfig {
             })
             .collect::<Vec<_>>();
 
+        let jwt_secret = env::var("INFRA_AV_JWT_SECRET").unwrap_or_default();
+        if require_api_credentials && jwt_secret.is_empty() {
+            anyhow::bail!("INFRA_AV_JWT_SECRET must be set");
+        }
         Ok(Self {
             host: env::var("INFRA_AV_HOST").unwrap_or_else(|_| "127.0.0.1".to_string()),
             port: env::var("INFRA_AV_PORT")
                 .ok()
                 .and_then(|value| value.parse::<u16>().ok())
                 .unwrap_or(5000),
-            jwt_secret: env::var("INFRA_AV_JWT_SECRET")
-                .context("INFRA_AV_JWT_SECRET must be set")?,
+            jwt_secret,
             broker_secret: env::var("INFRA_AV_BROKER_SECRET")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
@@ -127,7 +132,9 @@ impl AppConfig {
                 .unwrap_or_else(|_| "/usr/bin/clamscan".to_string()),
             freshclam_bin: env::var("INFRA_AV_FRESHCLAM_BIN")
                 .unwrap_or_else(|_| "/usr/bin/freshclam".to_string()),
+            split_worker: env::var("INFRA_AV_SPLIT_WORKER").as_deref() == Ok("1"),
             allowed_scan_roots,
+            read_only_scan_roots: parse_paths("INFRA_AV_READ_ONLY_SCAN_ROOTS", &[]),
             allowed_write_roots,
             allowed_database_roots,
             allow_device_scans: env::var("INFRA_AV_ALLOW_DEVICE_SCANS")

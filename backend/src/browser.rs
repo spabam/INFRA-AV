@@ -255,6 +255,8 @@ mod tests {
             users_file: root.join("config/users.json"),
             clamscan_bin: "/usr/bin/clamscan".to_string(),
             freshclam_bin: "/usr/bin/freshclam".to_string(),
+            split_worker: false,
+            read_only_scan_roots: vec![],
             allowed_scan_roots: vec![root.join("allowed")],
             allowed_write_roots: vec![root.join("data/quarantine")],
             allowed_database_roots: vec![PathBuf::from("/var/lib/clamav")],

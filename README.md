@@ -161,10 +161,15 @@ The frontend now:
 
 ## Installer
 
-Run the installer on Debian as root:
+From the Antivirus directory in a complete VANTAGE checkout, deploy or
+upgrade the UUUUI service with `sudo bash installer.sh --containers --apply`.
+The same entrypoint supports `--containers --dry-run` and
+`--containers --status`. [Antivirus container deployment](containers/README.md)
+
+For the native deployment on a host without the container cutover, run the
+installer on Debian as root.
 
 ```bash
-cd /home/spabam/Dropbox/Documenti/Secondary-Projects/INFRA-AV
 sudo ./installer.sh
 ```
 

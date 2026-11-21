@@ -1,9 +1,10 @@
 use std::fs;
+use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -14,15 +15,47 @@ use crate::models::{JobExecution, JobResult, JobStatus, QueuedJob};
 use crate::{queue, report};
 
 pub fn run(config: AppConfig, once: bool, interval: Duration) -> Result<()> {
-    if once {
-        let _ = process_next(&config)?;
-        return Ok(());
-    }
-
     loop {
-        let _ = process_next(&config)?;
+        {
+            let _lease = if config.split_worker {
+                let lease = queue::lock(&config, ".worker.lock")?;
+                recover_interrupted(&config)?;
+                Some(lease)
+            } else {
+                None
+            };
+            process_next(&config)?;
+        }
+        if once {
+            return Ok(());
+        }
         thread::sleep(interval);
     }
+}
+
+fn recover_interrupted(config: &AppConfig) -> Result<()> {
+    let _control = queue::lock(config, ".control.lock")?;
+    for entry in fs::read_dir(&config.processing_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "json") {
+            continue;
+        }
+        let job = queue::read_job(&path)?;
+        if config.done_dir.join(entry.file_name()).is_file()
+            || config.failed_dir.join(entry.file_name()).is_file()
+        {
+            fs::remove_file(&path)?;
+        } else {
+            finish_start_failure(
+                config,
+                &path,
+                job,
+                "Scan interrupted by worker shutdown. Verify the target state before retrying.".to_string(),
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn process_next(config: &AppConfig) -> Result<bool> {
@@ -42,6 +75,7 @@ fn process_next(config: &AppConfig) -> Result<bool> {
             return Ok(true);
         }
     };
+    let control = queue::lock(config, ".control.lock")?;
     job.status = JobStatus::Processing;
     job.status_updated_at = Utc::now();
     job.execution = Some(JobExecution {
@@ -79,10 +113,14 @@ fn process_next(config: &AppConfig) -> Result<bool> {
         execution.child_pid = Some(child.id());
     }
     queue::write_processing_job(&processing_path, &job)?;
+    drop(control);
 
-    let output = child
-        .wait_with_output()
-        .with_context(|| format!("failed to wait for {}", command.program))?;
+    let output = if config.split_worker {
+        controlled_output(child, &processing_path)
+    } else {
+        child.wait_with_output().map_err(Into::into)
+    }
+    .with_context(|| format!("failed to wait for {}", command.program))?;
     let finished_at = Utc::now();
 
     let mut combined = Vec::new();
@@ -102,7 +140,8 @@ fn process_next(config: &AppConfig) -> Result<bool> {
     }
     write_lines(&command.log_path, &combined).ok();
 
-    let persisted_job = queue::read_job(&processing_path).unwrap_or_else(|_| job.clone());
+    let control = queue::lock(config, ".control.lock")?;
+    let persisted_job = queue::read_job(&processing_path)?;
     let cancel_requested = persisted_job
         .execution
         .as_ref()
@@ -142,6 +181,7 @@ fn process_next(config: &AppConfig) -> Result<bool> {
     });
 
     queue::finalize_job(config, &processing_path, &job)?;
+    drop(control);
     if let Err(error) = report::persist_report(config, &job) {
         eprintln!(
             "failed to persist HTML report for {}: {error:#}",
@@ -149,6 +189,68 @@ fn process_next(config: &AppConfig) -> Result<bool> {
         );
     }
     Ok(true)
+}
+
+fn controlled_output(mut child: Child, processing_path: &Path) -> Result<Output> {
+    let mut stdout = child.stdout.take().context("missing scanner stdout")?;
+    let mut stderr = child.stderr.take().context("missing scanner stderr")?;
+    // Only the process that owns the child interprets its PID. The PID cannot
+    // be reused between a live try_wait and a signal until this owner reaps it.
+    thread::scope(|scope| -> Result<Output> {
+        let stdout = scope.spawn(move || {
+            let mut bytes = Vec::new();
+            stdout.read_to_end(&mut bytes).map(|_| bytes)
+        });
+        let stderr = scope.spawn(move || {
+            let mut bytes = Vec::new();
+            stderr.read_to_end(&mut bytes).map(|_| bytes)
+        });
+        let mut paused = false;
+        let mut cancellation: Option<Instant> = None;
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if let Some(execution) = queue::read_job(processing_path)
+                .ok()
+                .and_then(|job| job.execution)
+            {
+                let pid = child.id() as libc::pid_t;
+                if execution.cancel_requested {
+                    if let Some(when) = cancellation {
+                        if when.elapsed() >= Duration::from_secs(2) {
+                            let _ = child.kill();
+                        }
+                    } else {
+                        unsafe {
+                            libc::kill(pid, libc::SIGCONT);
+                            libc::kill(pid, libc::SIGTERM);
+                        }
+                        cancellation = Some(Instant::now());
+                    }
+                } else if execution.paused != paused {
+                    let signal = if execution.paused {
+                        libc::SIGSTOP
+                    } else {
+                        libc::SIGCONT
+                    };
+                    if unsafe { libc::kill(pid, signal) } == 0 {
+                        paused = execution.paused;
+                    }
+                }
+            }
+            thread::sleep(Duration::from_millis(100));
+        };
+        Ok(Output {
+            status,
+            stdout: stdout
+                .join()
+                .map_err(|_| anyhow::anyhow!("scanner stdout reader panicked"))??,
+            stderr: stderr
+                .join()
+                .map_err(|_| anyhow::anyhow!("scanner stderr reader panicked"))??,
+        })
+    })
 }
 
 /// A rejected target or unavailable executable is terminal, not a running scan.
@@ -220,12 +322,50 @@ mod tests {
             users_file: root.join("config/users.json"),
             clamscan_bin: "/usr/bin/clamscan".to_string(),
             freshclam_bin: "/usr/bin/freshclam".to_string(),
+            split_worker: false,
+            read_only_scan_roots: vec![],
             allowed_scan_roots: vec![root.join("targets")],
             allowed_write_roots: vec![root.join("data/quarantine")],
             allowed_database_roots: vec![PathBuf::from("/var/lib/clamav")],
             allow_device_scans: false,
             cors_origins: vec![],
         }
+    }
+
+    #[test]
+    fn read_only_scan_targets_require_direct_paths_but_local_symlinks_work() {
+        use std::os::unix::fs::symlink;
+
+        let (root, mut config, local) = fixture("protected-target");
+        let protected = root.join("targets/drive");
+        fs::create_dir_all(&protected).unwrap();
+        config.read_only_scan_roots.push(protected.clone());
+        let stored = protected.join("stored.txt");
+        let inside_alias = protected.join("inside-alias.txt");
+        let escape_alias = protected.join("escape-alias.txt");
+        let local_alias = local.with_file_name("local-alias.txt");
+        fs::write(&stored, "benign stored content").unwrap();
+        symlink(&stored, &inside_alias).unwrap();
+        symlink(&local, &escape_alias).unwrap();
+        symlink(&local, &local_alias).unwrap();
+
+        let validate = |path: &std::path::Path| {
+            crate::clamav::build_command(
+                &config,
+                "fixture",
+                "tester",
+                path.to_str().unwrap(),
+                ScanType::File,
+                &ClamAvOptions::default(),
+            )
+        };
+        assert!(validate(&stored).is_ok());
+        assert!(validate(&local_alias).is_ok());
+        for alias in [inside_alias, escape_alias] {
+            let result = validate(&alias);
+            assert!(matches!(result, Err(error) if error.to_string().contains("require a direct path")));
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -30,6 +30,13 @@ pub fn build_command(
     let validated_target = validate_target(config, target, scan_type)?;
     let move_dir = validate_optional_write_path(config, options.move_path.as_str())?;
     let copy_dir = validate_optional_write_path(config, options.copy.as_str())?;
+    validate_scan_mutation(
+        &config.read_only_scan_roots,
+        &validated_target,
+        scan_type,
+        options,
+        [move_dir.as_deref(), copy_dir.as_deref()],
+    )?;
     let database_dir = validate_optional_database_path(config, options.database.as_str())?;
     let temp_dir = validate_temp_dir(config, options.tempdir.as_str())?;
 
@@ -275,13 +282,49 @@ fn validate_option_combinations(options: &ClamAvOptions) -> Result<()> {
     Ok(())
 }
 
+fn validate_scan_mutation(
+    protected: &[PathBuf],
+    target: &Path,
+    scan_type: ScanType,
+    options: &ClamAvOptions,
+    destinations: [Option<&Path>; 2],
+) -> Result<()> {
+    let changes_source = options.remove || !options.move_path.trim().is_empty();
+    let recursive = scan_type == ScanType::Directory && options.recursive;
+    for root in protected {
+        if destinations.iter().flatten().any(|path| path.starts_with(root)) {
+            bail!("ClamAV output destination is in a read-only scan root");
+        }
+        if changes_source
+            && (target.starts_with(root)
+                || (recursive && root.starts_with(target))
+                || (scan_type == ScanType::Directory
+                    && (options.follow_dir_symlinks || options.follow_file_symlinks)))
+        {
+            bail!("Remove and quarantine moves cannot modify read-only scan roots");
+        }
+    }
+    Ok(())
+}
+
 fn validate_target(config: &AppConfig, target: &str, scan_type: ScanType) -> Result<PathBuf> {
     let raw_path = PathBuf::from(target);
     if !raw_path.is_absolute() {
         bail!("target must be an absolute path");
     }
 
-    let metadata = fs::metadata(&raw_path)
+    let resolved = fs::canonicalize(&raw_path)
+        .with_context(|| format!("failed to resolve {}", raw_path.display()))?;
+    if raw_path != resolved
+        && config
+            .read_only_scan_roots
+            .iter()
+            .any(|root| raw_path.starts_with(root) || resolved.starts_with(root))
+    {
+        bail!("Scan targets in read-only storage require a direct path");
+    }
+
+    let metadata = fs::metadata(&resolved)
         .with_context(|| format!("failed to stat target {}", raw_path.display()))?;
 
     match scan_type {
@@ -298,8 +341,6 @@ fn validate_target(config: &AppConfig, target: &str, scan_type: ScanType) -> Res
         _ => {}
     }
 
-    let resolved = fs::canonicalize(&raw_path)
-        .with_context(|| format!("failed to resolve {}", raw_path.display()))?;
     if scan_type != ScanType::Device
         && !config
             .allowed_scan_roots

@@ -4,7 +4,6 @@ use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 use serde_json::json;
 use std::path::{Component, PathBuf};
-use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
@@ -18,9 +17,7 @@ use crate::models::{
     ScanListResponse, ScanReportResponse, ScanStatusRequest, ScanStatusResponse,
     SignatureUpdateResponse,
 };
-use crate::{queue, report, worker};
-
-const FRESHCLAM_LOCK_FILE: &str = "/var/lock/infra-av-freshclam.lock";
+use crate::{queue, report, signatures, worker};
 
 #[derive(Clone)]
 struct AppState {
@@ -300,7 +297,9 @@ async fn dispatch(
                         return Err(anyhow!("scan is not currently running"));
                     }
                     let pid = running_child_pid(job)?;
-                    send_signal(pid, libc::SIGSTOP)?;
+                    if !state.config.split_worker {
+                        send_signal(pid, libc::SIGSTOP)?;
+                    }
                     job.status = JobStatus::Paused;
                     job.status_updated_at = chrono::Utc::now();
                     if let Some(execution) = job.execution.as_mut() {
@@ -324,7 +323,9 @@ async fn dispatch(
                         return Err(anyhow!("scan is not paused"));
                     }
                     let pid = running_child_pid(job)?;
-                    send_signal(pid, libc::SIGCONT)?;
+                    if !state.config.split_worker {
+                        send_signal(pid, libc::SIGCONT)?;
+                    }
                     job.status = JobStatus::Processing;
                     job.status_updated_at = chrono::Utc::now();
                     if let Some(execution) = job.execution.as_mut() {
@@ -354,23 +355,27 @@ async fn dispatch(
                     status: cancelled.status,
                 }
             } else if path.starts_with(&state.config.processing_dir) {
-                let mut job = job;
-                let pid = running_child_pid(&job)?;
-                if job.status == JobStatus::Paused {
-                    send_signal(pid, libc::SIGCONT).ok();
+                let mut native_pid = None;
+                let response = update_running_job(&state.config, &claims, &payload.request_id, |job, _| {
+                    let pid = running_child_pid(job)?;
+                    if !state.config.split_worker {
+                        if job.status == JobStatus::Paused {
+                            send_signal(pid, libc::SIGCONT).ok();
+                        }
+                        native_pid = Some(pid);
+                    }
+                    if let Some(execution) = job.execution.as_mut() {
+                        execution.paused = false;
+                        execution.cancel_requested = true;
+                    }
+                    job.status = JobStatus::Cancelled;
+                    job.status_updated_at = chrono::Utc::now();
+                    Ok(job.status)
+                })?;
+                if let Some(pid) = native_pid {
+                    stop_process(pid);
                 }
-                if let Some(execution) = job.execution.as_mut() {
-                    execution.paused = false;
-                    execution.cancel_requested = true;
-                }
-                job.status = JobStatus::Cancelled;
-                job.status_updated_at = chrono::Utc::now();
-                queue::write_job(&path, &job)?;
-                stop_process(pid);
-                ScanControlResponse {
-                    request_id: job.request_id,
-                    status: job.status,
-                }
+                response
             } else {
                 ScanControlResponse {
                     request_id: job.request_id,
@@ -400,7 +405,7 @@ async fn dispatch(
                 return Ok(forbidden("admin role required"));
             }
             let config = state.config.clone();
-            let (exit_code, lines) = web::block(move || run_signature_update(&config))
+            let (exit_code, lines) = web::block(move || signatures::update(&config))
                 .await
                 .context("signature update task failed")??;
 
@@ -459,6 +464,7 @@ fn update_running_job<F>(
 where
     F: FnMut(&mut crate::models::QueuedJob, &std::path::Path) -> Result<JobStatus>,
 {
+    let _lock = queue::lock(config, ".control.lock")?;
     let Some((mut job, path)) = queue::load_job_with_path(config, request_id)? else {
         return Err(anyhow!("job not found"));
     };
@@ -516,27 +522,6 @@ fn stop_process(pid: i32) {
         thread::sleep(Duration::from_millis(100));
     }
     let _ = send_signal(pid, libc::SIGKILL);
-}
-
-fn run_signature_update(config: &AppConfig) -> Result<(i32, Vec<String>)> {
-    let output = Command::new("flock")
-        .args(["-n", FRESHCLAM_LOCK_FILE, &config.freshclam_bin, "--stdout"])
-        .output()
-        .with_context(|| format!("failed to execute {}", config.freshclam_bin))?;
-
-    let mut lines = Vec::new();
-    lines.extend(
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(str::to_string),
-    );
-    lines.extend(
-        String::from_utf8_lossy(&output.stderr)
-            .lines()
-            .map(str::to_string),
-    );
-
-    Ok((output.status.code().unwrap_or(56), lines))
 }
 
 fn ok<T: Serialize>(data: T) -> HttpResponse {

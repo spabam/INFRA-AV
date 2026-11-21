@@ -1,0 +1,12 @@
+**
+!VERSION
+!backend/
+!backend/Cargo.toml
+!backend/Cargo.lock
+!backend/build.rs
+!backend/src/
+!backend/src/**
+!containers/
+!containers/Dockerfile
+!containers/Dockerfile.dockerignore
+!containers/freshclam.conf

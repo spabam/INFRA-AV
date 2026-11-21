@@ -1,5 +1,20 @@
 #!/usr/bin/env bash
 
+if [[ "${1:-}" == --containers ]]; then
+  shift
+  project="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+  for entrypoint in "$project"/{..,../..}/{System/UUUUI,UUUUI}/containers/platform/module-entrypoint.sh; do
+    if [[ -f "$entrypoint" ]]; then exec bash "$entrypoint" antivirus "$@"; fi
+  done
+  printf '%s\n' '[antivirus] Container deployment requires the complete VANTAGE checkout.' >&2
+  exit 2
+fi
+
+if [[ "${1:-}" == --container-image ]]; then
+  shift
+  exec bash "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/containers/build-image.sh" "$@"
+fi
+
 # --- VANTAGE edition: new (UUUUI-integrated) ONLY ---
 # The old standalone edition was removed 2026-11-18. VANTAGE installs only the new,
 # UUUUI-integrated edition (one UI on :31337); 'old'/'standalone' is refused.
@@ -18,40 +33,19 @@ printf '[vantage] installing the new (UUUUI-integrated) edition\n' >&2
 STANDALONE_FRONT="${INFRA_AV_STANDALONE_FRONT:-0}"
 # --- end edition selector ---
 
-# Ensure the shared INFRA authentication helper exists without replacing it.
-_vantage_infrauth_path=/etc/infrascan/infrauth
-if [ ! -e "$_vantage_infrauth_path" ]; then
-    _vantage_infrauth_tmp=$(mktemp) || exit 1
-    printf '%s\n' 'echo www.infrascan.net' >"$_vantage_infrauth_tmp"
-    if [ "$(id -u)" -eq 0 ]; then
-        install -d -m 755 /etc/infrascan &&
-            install -m 644 "$_vantage_infrauth_tmp" "$_vantage_infrauth_path"
-    elif command -v sudo >/dev/null 2>&1; then
-        sudo install -d -m 755 /etc/infrascan &&
-            sudo install -m 644 "$_vantage_infrauth_tmp" "$_vantage_infrauth_path"
-    else
-        printf 'Error: root privileges are required to create %s\n' "$_vantage_infrauth_path" >&2
-        rm -f "$_vantage_infrauth_tmp"
-        exit 1
-    fi || {
-        rm -f "$_vantage_infrauth_tmp"
-        exit 1
-    }
-    rm -f "$_vantage_infrauth_tmp"
-fi
 # VANTAGE_INSTALLER_CLEANUP_BOOTSTRAP
-__vantage_installer_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-__vantage_cleanup_probe="$__vantage_installer_dir"
-while [ "$__vantage_cleanup_probe" != "/" ]; do
-    if [ -f "$__vantage_cleanup_probe/.installer_cleanup.sh" ]; then
-        # shellcheck source=/dev/null
-        . "$__vantage_cleanup_probe/.installer_cleanup.sh"
-        vantage_register_installer_cleanup "$__vantage_installer_dir"
-        break
+register_installer_cleanup() {
+  local directory="$PROJECT_ROOT"
+  while [[ "$directory" != / ]]; do
+    if [[ -f "$directory/.installer_cleanup.sh" ]]; then
+      # shellcheck source=/dev/null
+      . "$directory/.installer_cleanup.sh"
+      vantage_register_installer_cleanup "$PROJECT_ROOT"
+      return
     fi
-    __vantage_cleanup_probe="$(dirname "$__vantage_cleanup_probe")"
-done
-unset __vantage_cleanup_probe
+    directory="$(dirname -- "$directory")"
+  done
+}
 
 
 set -euo pipefail
@@ -145,6 +139,19 @@ require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
     echo "Failed to obtain root privileges." >&2
     exit 1
+  fi
+}
+
+ensure_infrauth_helper() {
+  local helper=/etc/infrascan/infrauth temporary
+  [[ ! -e "$helper" ]] || return 0
+  temporary="$(mktemp)"
+  if printf '%s\n' 'echo www.infrascan.net' > "$temporary" &&
+      install -d -m 0755 "${helper%/*}" && install -m 0644 "$temporary" "$helper"; then
+    rm -f -- "$temporary"
+  else
+    rm -f -- "$temporary"
+    return 1
   fi
 }
 
@@ -915,6 +922,11 @@ EOF
 main() {
   elevate_if_needed "$@"
   require_root
+  if [[ -L /var/lib/vantage-containers/platform/antivirus/current ]]; then
+    printf '%s\n' '[antivirus] Antivirus uses the container deployment. Use this installer with --containers --apply or --containers --status.' >&2
+    exit 2
+  fi
+  register_installer_cleanup
   if [[ "$INSTALL_MODE" == "uninstall" || "$INSTALL_MODE" == "--uninstall" ]]; then
     uninstall_existing_install
     fix_project_permissions
@@ -925,6 +937,7 @@ main() {
     echo "Unsupported installer mode: $INSTALL_MODE" >&2
     exit 1
   fi
+  ensure_infrauth_helper
   remove_service_artifacts
   check_frontend_tree
   validate_pam_service_name
